@@ -139,7 +139,7 @@ struct ChainProxyConfigView: TranslatingView {
                     .padding(.vertical, T.space8)
             }
             ForEach(self.nodes) { node in
-                HStack(spacing: T.space8) {
+                HStack(spacing: T.space4) {
                     Button { self.landingID = node.id } label: {
                         HStack(spacing: T.space8) {
                             Image(systemName: "link")
@@ -147,10 +147,10 @@ struct ChainProxyConfigView: TranslatingView {
                                 .font(.app(size: T.FontSize.title3))
                             VStack(alignment: .leading, spacing: T.space4) {
                                 Text(node.name)
-                                    .font(.app(size: T.FontSize.body, weight: .semibold))
+                                    .font(.app(size: T.FontSize.callout, weight: .semibold))
                                     .foregroundStyle(self.nativePrimaryLabel)
                                 Text(self.nodeSummary(node))
-                                    .font(.app(size: T.FontSize.caption))
+                                    .font(.app(size: T.FontSize.caption - 1))
                                     .foregroundStyle(self.nativeSecondaryLabel)
                             }
                             .lineLimit(1)
@@ -290,7 +290,7 @@ private struct ChainProxyNodeLatencyView: TranslatingView {
                     self.delayBadge(samples: self.samples, fallbackText: self.tr("ui.common.timeout"), showsHistory: true)
                 }
             }
-            .frame(width: 52, height: T.rowHeight)
+            .frame(width: 52, height: T.rowHeight, alignment: .trailing)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -505,13 +505,22 @@ private struct ChainProxyNodeEditorView: TranslatingView {
         VStack(alignment: .leading, spacing: 12) {
             self.section("ui.chain.connection")
             self.field("ui.chain.protocol") {
-                Picker(self.tr("ui.chain.protocol"), selection: self.$form.type) {
-                    Text("SOCKS5").tag("socks5")
-                    Text("HTTP").tag("http")
+                Menu {
+                    Button("SOCKS5") { self.form.type = "socks5" }
+                    Button("HTTP") { self.form.type = "http" }
+                } label: {
+                    HStack {
+                        Text(self.form.type == "socks5" ? "SOCKS5" : "HTTP")
+                        Spacer()
+                        Image(systemName: "chevron.up.chevron.down")
+                    }
+                    .frame(height: T.rowHeight)
+                    .contentShape(Capsule())
                 }
-                .labelsHidden()
-                .pickerStyle(.menu)
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
                 .frame(maxWidth: .infinity)
+                .background(self.nativeControlFill, in: Capsule())
                 .disabled(self.node != nil)
             }
             HStack(alignment: .top, spacing: T.space8) {
