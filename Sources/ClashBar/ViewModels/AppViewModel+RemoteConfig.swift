@@ -136,6 +136,7 @@ extension AppViewModel {
     }
 
     func deleteConfigFile(named fileName: String) async {
+        guard await self.waitForChainProxySave() else { return }
         guard self.confirmDeleteConfig(named: fileName) else { return }
         guard let configDirectory = ensureConfigDirectoryAvailable() else { return }
 
@@ -317,20 +318,32 @@ extension AppViewModel {
 
     func reloadConfig() async {
         let actionName = tr("log.action_name.reload_config")
-        let expectedTunEnabled = isTunEnabled
 
         do {
+            // Hold the same gate as chain saves from snapshot capture through applying the runtime config.
+            try await self.beginRuntimeConfigUpdate()
+            defer { self.isRuntimeConfigUpdating = false }
+            let expectedTunEnabled = self.isTunEnabled
             ensureAPIClient()
             guard let configPath = await self.resolveSelectedConfigPath() else {
                 appendLog(level: "error", message: tr("log.start.no_config"))
                 return
             }
-            try await self.clientOrThrow().requestNoResponse(.putConfigs(force: false, path: configPath, payload: nil))
+            let runtimePath = self.isRemoteTarget ? configPath : try await self.runtimeConfigPath(for: configPath)
+            if !self.isRemoteTarget { try await self.processManager.validateConfig(configPath: runtimePath) }
+            try await self.clientOrThrow().requestNoResponse(.putConfigs(force: false, path: runtimePath, payload: nil))
             try await self.restoreTunAfterConfigReloadIfNeeded(expectedEnabled: expectedTunEnabled)
             appendLog(level: "info", message: tr("log.action.success", actionName))
         } catch {
             appendLog(level: "error", message: tr("log.action.failed", actionName, error.localizedDescription))
         }
+    }
+
+    func reloadLocalRuntimeConfig(configPath: String) async throws {
+        guard !self.isRemoteTarget else { throw ChainProxyConfigError.sourceChanged }
+        let expectedTunEnabled = self.isTunEnabled
+        try await self.clientOrThrow().requestNoResponse(.putConfigs(force: false, path: configPath, payload: nil))
+        try await self.restoreTunAfterConfigReloadIfNeeded(expectedEnabled: expectedTunEnabled)
     }
 
     func ensureConfigDirectoryAvailable() -> URL? {

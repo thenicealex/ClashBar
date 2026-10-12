@@ -416,3 +416,27 @@
 "app.config.delete.message" = "This will permanently delete the config file. If it is a remote subscription, the subscription metadata will also be removed.";
 "log.config.delete.success" = "Config deleted: %@";
 "log.config.delete.failed" = "Failed to delete config (%@): %@";
+
+"ui.chain.title" = "Chain Proxy";
+"ui.chain.description" = "The chain and its node configurations are saved independently of airport profiles. Subscription updates and profile switches automatically reuse your front and exit nodes. Proxy rules use the chain; direct and reject rules are preserved.";
+"ui.chain.source" = "Current profile for adding nodes: %@";
+"ui.chain.front" = "Front node";
+"ui.chain.landing" = "Exit node";
+"ui.chain.choose" = "Choose a node";
+"ui.chain.path" = "This Mac → %@ → %@ → Destination (exit IP from the exit node)";
+"ui.chain.loading" = "Reading node configurations…";
+"ui.chain.no_nodes" = "At least two eligible nodes are required. Only nodes with a server address and no existing dialer proxy are shown. Start the core and update provider caches to load subscription nodes.";
+"ui.chain.unavailable" = "These providers could not be read or use unsupported expressions/encryption: %@. Update their caches and try again.";
+"ui.chain.refresh" = "Reload Nodes";
+"ui.chain.close" = "Close";
+"ui.chain.apply" = "Save and Apply";
+"ui.chain.saved" = "Chain settings and nodes saved independently. Subscription updates and profile switches reuse them automatically. Disable and save to restore the original proxy policies. If the core is stopped, click Start.";
+"ui.chain.load_failed" = "Cannot read nodes from the current profile. Saved chain nodes remain available. Check the profile and provider caches before adding new nodes.";
+"ui.chain.invalid_selection" = "Choose two different, valid nodes.";
+"ui.chain.source_changed" = "The profile or runtime state changed while saving. Please try again.";
+"ui.chain.save_failed" = "Could not save or apply the chain: %@";
+"ui.chain.enabled" = "Enable chain proxy";
+"ui.chain.active" = "Enabled";
+"ui.chain.saved_node" = "Independently saved node";
+"ui.chain.saved_load_failed" = "Cannot read saved chain settings. Choose nodes and save again. The core will not silently bypass the chain when saved settings are corrupt.";
+"ui.chain.rollback_failed" = "Applying the chain failed and the previous runtime could not be restored. Saved settings are unchanged. Restart the core.";

@@ -126,6 +126,14 @@ extension AppViewModel {
     }
 
     func coreErrorMessage(_ error: Error) -> String {
+        if let chainError = error as? ChainProxyConfigError {
+            switch chainError {
+            case .invalidConfig: return self.tr("ui.chain.load_failed")
+            case .invalidSelection: return self.tr("ui.chain.invalid_selection")
+            case .sourceChanged: return self.tr("ui.chain.source_changed")
+            case .invalidSavedSettings: return self.tr("ui.chain.saved_load_failed")
+            }
+        }
         if let binaryResolutionError = error as? MihomoBinaryResolutionError {
             switch binaryResolutionError {
             case let .binaryNotFound(expectedDirectory):

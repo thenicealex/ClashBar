@@ -676,7 +676,7 @@ final class MihomoProcessManager: MihomoControlling, @unchecked Sendable {
             .standardizedFileURL
             .deletingLastPathComponent()
             .resolvingSymlinksInPath()
-        if configDirectoryURL.lastPathComponent == "config" {
+        if ["config", "runtime"].contains(configDirectoryURL.lastPathComponent) {
             return configDirectoryURL.deletingLastPathComponent()
         }
         return configDirectoryURL

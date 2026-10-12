@@ -51,9 +51,14 @@ struct ProxyTabView: TranslatingView {
     @State var copiedProxyCommandTarget: ProxyCommandCopyTarget?
     @State var proxyCommandCopyResetTask: Task<Void, Never>?
     @State var hoveredProviderName: String?
+    @State private var showsChainProxyConfig = false
 
     var body: some View {
         self.proxyTabBody
+            .sheet(isPresented: self.$showsChainProxyConfig) {
+                ChainProxyConfigView()
+                    .environmentObject(self.appViewModel)
+            }
             .onDisappear {
                 self.proxyCommandCopyResetTask?.cancel()
                 self.proxyCommandCopyResetTask = nil
@@ -350,6 +355,29 @@ struct ProxyTabView: TranslatingView {
         VStack(alignment: .leading, spacing: T.space6) {
             self.trafficOverview
             self.proxyQuickRows
+            if !self.appViewModel.isRemoteTarget {
+                Button {
+                    self.showsChainProxyConfig = true
+                } label: {
+                    self.quickRowContent(
+                        title: self.tr("ui.chain.title"),
+                        symbol: "link",
+                        foreground: self.nativePurple)
+                    {
+                        HStack(spacing: T.space2) {
+                            if self.appViewModel.chainProxySettings?.enabled == true {
+                                Text(self.tr("ui.chain.active"))
+                                    .font(.app(size: T.FontSize.caption))
+                                    .foregroundStyle(self.nativePositive)
+                            }
+                            Image(systemName: "chevron.right")
+                                .foregroundStyle(self.nativeSecondaryLabel)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(self.appViewModel.isCoreActionProcessing || self.appViewModel.isChainProxySaving)
+            }
             if !self.proxyStore.sortedProxyProviderNames.isEmpty {
                 proxyProvidersSection
             }

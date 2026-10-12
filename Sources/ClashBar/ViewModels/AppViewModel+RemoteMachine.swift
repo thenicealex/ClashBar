@@ -3,11 +3,13 @@ import Foundation
 @MainActor
 extension AppViewModel {
     func switchToMachineTarget(_ target: MachineTarget) async {
+        guard await self.waitForChainProxySave() else { return }
         if case let .remote(machine) = target {
             let status = await self.remoteMachineStore.refreshConnectivity(for: machine)
             guard status.isConnected else { return }
         }
 
+        guard await self.waitForChainProxySave() else { return }
         self.remoteMachineStore.selectTarget(target)
 
         self.cancelPolling()

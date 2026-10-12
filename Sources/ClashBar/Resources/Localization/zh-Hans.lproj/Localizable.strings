@@ -416,3 +416,27 @@
 "app.config.delete.message" = "此操作将永久删除配置文件。如果这是远程订阅，订阅元数据也会被一并删除。";
 "log.config.delete.success" = "已删除配置：%@";
 "log.config.delete.failed" = "删除配置失败（%@）：%@";
+
+"ui.chain.title" = "链式代理";
+"ui.chain.description" = "链式代理与机场配置独立保存。更新订阅或切换机场后会自动沿用前置和落地节点，不需要重新选择。代理规则走链路，直连和拒绝规则保留。";
+"ui.chain.source" = "可添加节点的当前机场：%@";
+"ui.chain.front" = "前置节点";
+"ui.chain.landing" = "落地节点";
+"ui.chain.choose" = "请选择节点";
+"ui.chain.path" = "本机 → %@ → %@ → 目标网站（出口为落地节点）";
+"ui.chain.loading" = "读取节点配置…";
+"ui.chain.no_nodes" = "需要至少两个可用节点。仅显示包含服务器地址且未设置前置代理的节点。订阅节点请先启动内核并更新订阅缓存。";
+"ui.chain.unavailable" = "以下订阅暂不可读取，或使用了不支持的表达式／加密：%@。请更新订阅缓存后重试。";
+"ui.chain.refresh" = "重新读取";
+"ui.chain.close" = "关闭";
+"ui.chain.apply" = "保存并应用";
+"ui.chain.saved" = "链式代理设置和节点已独立保存。更新或切换机场后自动生效；关闭开关并保存即可恢复机场原有代理策略。内核未运行时，点击 Start 启用。";
+"ui.chain.load_failed" = "无法读取当前机场节点，已保存的链路仍可使用。添加新节点前请检查机场配置和订阅缓存。";
+"ui.chain.invalid_selection" = "请选择两个不同的有效节点。";
+"ui.chain.source_changed" = "机场配置或运行状态在保存时发生变化，请重试。";
+"ui.chain.save_failed" = "链式代理保存或应用失败：%@";
+"ui.chain.enabled" = "启用链式代理";
+"ui.chain.active" = "已启用";
+"ui.chain.saved_node" = "独立保存的节点";
+"ui.chain.saved_load_failed" = "无法读取已保存的链式代理设置。请重新选择节点并保存；为避免绕过链路，内核不会自动忽略损坏的设置。";
+"ui.chain.rollback_failed" = "链式代理应用失败，恢复原运行配置也失败。已保存的设置未改变，请重新启动内核。";

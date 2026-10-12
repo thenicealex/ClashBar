@@ -19,7 +19,7 @@ extension AppViewModel {
 
     func startCore(trigger: StartTrigger = .manual) async {
         guard !self.isRemoteTarget else { return }
-        guard !isCoreActionProcessing else { return }
+        guard !isCoreActionProcessing, !self.isChainProxySaving else { return }
         if trigger == .manual {
             shouldResumeCoreAfterNetworkRecovery = false
         }
@@ -37,7 +37,8 @@ extension AppViewModel {
 
             settingsOverlay = try await prepareTunOverlayForCoreStartup(settingsOverlay)
 
-            guard await self.validateConfigBeforeCoreLaunch(configPath: configPath) else {
+            let runtimePath = try await self.runtimeConfigPath(for: configPath)
+            guard await self.validateConfigBeforeCoreLaunch(configPath: runtimePath) else {
                 preserveLocalSettingsOnNextSync = false
                 if trigger == .auto {
                     let fileName = URL(fileURLWithPath: configPath).lastPathComponent
@@ -53,7 +54,7 @@ extension AppViewModel {
 
             let launchController = applyExternalControllerFromSelectedConfigFile(configPath: configPath)
             statusText = "Starting"
-            _ = try await self.processManager.start(configPath: configPath, controller: launchController)
+            _ = try await self.processManager.start(configPath: runtimePath, controller: launchController)
 
             await self.completeCoreBootstrap(
                 configPath: configPath,
@@ -90,7 +91,7 @@ extension AppViewModel {
 
     func stopCore(trigger: StopTrigger = .manual) async {
         guard !self.isRemoteTarget else { return }
-        guard !isCoreActionProcessing else { return }
+        guard !isCoreActionProcessing, !self.isChainProxySaving else { return }
         if trigger == .manual {
             shouldResumeCoreAfterNetworkRecovery = false
         }
@@ -113,7 +114,7 @@ extension AppViewModel {
 
     func restartCore(trigger: ProviderRefreshTrigger = .restart) async {
         guard !self.isRemoteTarget else { return }
-        guard !isCoreActionProcessing else { return }
+        guard !isCoreActionProcessing, !self.isChainProxySaving else { return }
         coreActionState = .restarting
         defer { coreActionState = .idle }
         preserveLocalSettingsOnNextSync = true
@@ -124,7 +125,8 @@ extension AppViewModel {
                 return
             }
 
-            guard await self.validateConfigBeforeCoreLaunch(configPath: configPath) else {
+            let runtimePath = try await self.runtimeConfigPath(for: configPath)
+            guard await self.validateConfigBeforeCoreLaunch(configPath: runtimePath) else {
                 preserveLocalSettingsOnNextSync = false
                 return
             }
@@ -136,7 +138,7 @@ extension AppViewModel {
                 transitionKind: .restart,
                 disableRuntimeTunBeforeStop: false)
             let settingsOverlay = self.overlayApplyingPendingCoreFeatureRecovery(currentEditableSettingsSnapshot())
-            _ = try await self.processManager.restart(configPath: configPath, controller: launchController)
+            _ = try await self.processManager.restart(configPath: runtimePath, controller: launchController)
             await self.completeCoreBootstrap(
                 configPath: configPath,
                 settingsOverlay: settingsOverlay,
@@ -259,7 +261,7 @@ extension AppViewModel {
 
     @discardableResult
     func validateConfigBeforeCoreLaunch(configPath: String) async -> Bool {
-        guard let details = await self.configValidationFailureDetails(configPath: configPath) else {
+        guard let details = await self.configValidationFailureDetails(configPath: configPath, prepareChain: false) else {
             return true
         }
 
@@ -267,9 +269,10 @@ extension AppViewModel {
         return false
     }
 
-    func configValidationFailureDetails(configPath: String) async -> String? {
+    func configValidationFailureDetails(configPath: String, prepareChain: Bool = true) async -> String? {
         do {
-            try await self.processManager.validateConfig(configPath: configPath)
+            let path = prepareChain ? try await self.runtimeConfigPath(for: configPath) : configPath
+            try await self.processManager.validateConfig(configPath: path)
             return nil
         } catch {
             let detailsRaw = self.coreErrorMessage(error).trimmingCharacters(in: .whitespacesAndNewlines)

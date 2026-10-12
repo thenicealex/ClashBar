@@ -61,6 +61,10 @@ final class AppViewModel: ObservableObject {
 
     @Published var mihomoBinaryPath: String = "-"
     @Published var selectedConfigName: String = "-"
+    @Published var isChainProxySaving = false
+    var isRuntimeConfigUpdating = false
+    @Published var chainProxySettings: ChainProxySettings?
+    @Published var chainProxySettingsLoadFailed = false
     @Published var configDirectoryPath: String = "-"
     @Published var availableConfigFileNames: [String] = []
     @Published var remoteConfigMenuStates: [String: RemoteConfigMenuState] = [:]
@@ -487,6 +491,7 @@ final class AppViewModel: ObservableObject {
         configureStreamCoordinator()
         refreshLaunchAtLoginStatus()
         self.configureManagedProcessCallbacks()
+        self.loadChainProxySettings()
     }
 
     isolated deinit {
