@@ -132,6 +132,9 @@ extension AppViewModel {
             case .invalidSelection: return self.tr("ui.chain.invalid_selection")
             case .sourceChanged: return self.tr("ui.chain.source_changed")
             case .invalidSavedSettings: return self.tr("ui.chain.saved_load_failed")
+            case .invalidNodeConfig: return self.tr("ui.chain.node_invalid")
+            case .invalidNodeLink: return self.tr("ui.chain.link_invalid")
+            case .unsupportedNodeForm: return self.tr("ui.chain.form_unsupported")
             }
         }
         if let binaryResolutionError = error as? MihomoBinaryResolutionError {

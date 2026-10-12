@@ -8,6 +8,7 @@ struct AttachedPopoverMenu<Label: View, Content: View>: View {
     let width: CGFloat?
     let maxHeight: CGFloat?
     let expandAnchor: Bool
+    let acceptsKeyboardInput: Bool
     let onWillPresent: (() -> Void)?
     let label: (_ isHovered: Bool) -> Label
     let content: (_ dismiss: @escaping () -> Void) -> Content
@@ -22,6 +23,7 @@ struct AttachedPopoverMenu<Label: View, Content: View>: View {
         width: CGFloat? = nil,
         maxHeight: CGFloat? = nil,
         expandAnchor: Bool = true,
+        acceptsKeyboardInput: Bool = false,
         onWillPresent: (() -> Void)? = nil,
         @ViewBuilder label: @escaping (_ isHovered: Bool) -> Label,
         @ViewBuilder content: @escaping (_ dismiss: @escaping () -> Void) -> Content)
@@ -29,6 +31,7 @@ struct AttachedPopoverMenu<Label: View, Content: View>: View {
         self.width = width
         self.maxHeight = maxHeight
         self.expandAnchor = expandAnchor
+        self.acceptsKeyboardInput = acceptsKeyboardInput
         self.onWillPresent = onWillPresent
         self.label = label
         self.content = content
@@ -72,8 +75,9 @@ struct AttachedPopoverMenu<Label: View, Content: View>: View {
                 anchorHovered: self.$isAnchorHovered,
                 popoverRequested: self.$isPopoverRequested,
                 suppressAutoOpen: self.$suppressAutoOpen,
-                width: self.width,
+                width: self.width.map { $0 + T.space8 * 2 },
                 maxHeight: self.maxHeight,
+                acceptsKeyboardInput: self.acceptsKeyboardInput,
                 onVisibilityChanged: { visible in
                     self.shouldBuildPopoverContent = visible
                 },
@@ -281,6 +285,7 @@ private struct SideAttachedPopoverHost<Content: View>: NSViewRepresentable {
     @Binding var suppressAutoOpen: Bool
     let width: CGFloat?
     let maxHeight: CGFloat?
+    let acceptsKeyboardInput: Bool
     let onVisibilityChanged: ((Bool) -> Void)?
     let content: Content
 
@@ -303,6 +308,7 @@ private struct SideAttachedPopoverHost<Content: View>: NSViewRepresentable {
         context.coordinator.suppressAutoOpen = self.$suppressAutoOpen
         context.coordinator.width = self.width
         context.coordinator.maxHeight = self.maxHeight
+        context.coordinator.panel.acceptsKeyboardInput = self.acceptsKeyboardInput
         context.coordinator.onVisibilityChanged = self.onVisibilityChanged
         context.coordinator.hostingController.rootView = self.content
         context.coordinator.sync(anchorView: nsView)
@@ -357,6 +363,7 @@ private struct SideAttachedPopoverHost<Content: View>: NSViewRepresentable {
             super.init()
 
             self.panel.isReleasedWhenClosed = false
+            self.panel.becomesKeyOnlyIfNeeded = true
             self.panel.isOpaque = false
             self.panel.backgroundColor = .clear
             self.panel.hasShadow = true
@@ -579,8 +586,10 @@ private struct SideAttachedPopoverHost<Content: View>: NSViewRepresentable {
 
 @MainActor
 private final class SideAttachedMenuPanel: NSPanel {
+    var acceptsKeyboardInput = false
+
     override var canBecomeKey: Bool {
-        false
+        self.acceptsKeyboardInput
     }
 
     override var canBecomeMain: Bool {

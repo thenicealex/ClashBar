@@ -35,17 +35,18 @@ struct ChainProxyViewModelTests {
         #expect(restored.configService.selectedConfig == second)
     }
 
-    @Test func failedValidationKeepsSavedSettingsAndAirportSelection() async throws {
+    @Test(arguments: [true, false])
+    func failedValidationKeepsSavedSettingsAndAirportSelection(enabled: Bool) async throws {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: home) }
         let core = RecordingChainCore(rejectsValidation: true)
         let (model, config, front, landing) = try self.configuredModel(home: home, core: core)
         let root = model.workingDirectoryManager.rootDirectoryURL
-        let previous = ChainProxySettings(enabled: false, id: UUID(), front: front, landing: landing)
+        let previous = ChainProxySettings(enabled: !enabled, id: UUID(), front: front, landing: landing)
         try ChainProxyConfigService.writeSettings(previous, workingDirectory: root)
         model.loadChainProxySettings()
         do {
-            try await model.saveChainProxySettings(enabled: true, front: front, landing: landing)
+            try await model.saveChainProxySettings(enabled: enabled, front: front, landing: landing)
             Issue.record("Expected validation to fail")
         } catch {
             #expect(model.chainProxySettings == previous)
@@ -54,6 +55,55 @@ struct ChainProxyViewModelTests {
             #expect(!model.isChainProxySaving)
             #expect(!model.isRuntimeConfigUpdating)
         }
+    }
+
+    @Test(arguments: [true, false], [true, false])
+    func toggleCommitsOnlyAfterApplyAndRetainsStateOnFailure(enabled: Bool, failSave: Bool) async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let core = RecordingChainCore(running: true)
+        let (model, config, front, landing) = try self.configuredModel(home: home, core: core)
+        let root = model.workingDirectoryManager.rootDirectoryURL
+        let previous = ChainProxySettings(enabled: !enabled, id: UUID(), front: front, landing: landing)
+        try ChainProxyConfigService.writeSettings(previous, workingDirectory: root)
+        try ChainProxyConfigService.writeNodes([front, landing], workingDirectory: root)
+        model.loadChainProxySettings()
+        let pause = ChainValidationPause()
+        let session = self.configureAPI(for: model, pause: pause)
+        defer { session.invalidateAndCancel() }
+        let api = ChainAPIProtocol.state
+        if failSave { api.failNextConfigPUT() }
+        let saving = Task { () -> Error? in
+            do {
+                try await model.saveChainProxySettings(enabled: enabled, front: front, landing: landing)
+                return nil
+            } catch { return error }
+        }
+        await pause.waitUntilPaused()
+        #expect(model.chainProxySettings == previous)
+        #expect(try ChainProxyConfigService.readSettings(workingDirectory: root) == previous)
+        #expect(model.isChainProxySaving)
+        #expect(model.isRuntimeConfigUpdating)
+        do {
+            try await model.saveChainProxySettings(enabled: enabled, front: front, landing: landing)
+            Issue.record("A second toggle must not overlap the pending apply")
+        } catch {
+            #expect(error is ChainProxyConfigError)
+        }
+        await pause.release()
+        let error = await saving.value
+        #expect((error != nil) == failSave)
+        let expected = failSave ? previous : ChainProxySettings(
+            enabled: enabled, id: previous.id, front: front, landing: landing)
+        #expect(model.chainProxySettings == expected)
+        #expect(try ChainProxyConfigService.readSettings(workingDirectory: root) == expected)
+        #expect(try ChainProxyConfigService.readNodes(workingDirectory: root, settings: expected) == [front, landing])
+        #expect(model.configService.selectedConfig == config)
+        #expect(api.appliedPaths.count == (failSave ? 2 : 1))
+        let finalPath = try #require(api.appliedPaths.last)
+        #expect(finalPath == (expected.enabled ? try await model.runtimeConfigPath(for: config.path) : config.path))
+        #expect(!model.isChainProxySaving)
+        #expect(!model.isRuntimeConfigUpdating)
     }
 
     @Test(arguments: [(true, false), (true, true), (false, false), (false, true)])
@@ -65,7 +115,7 @@ struct ChainProxyViewModelTests {
         let (model, config, front, landing) = try self.configuredModel(home: home, core: core)
         let root = model.workingDirectoryManager.rootDirectoryURL
         let oldLanding = ChainProxyNode(
-            id: "saved-old-exit", name: "Old Exit", source: "Previous subscription",
+            id: "saved-old-exit", name: "Old Exit",
             yaml: "name: Old Exit\ntype: socks5\nserver: old-exit.example.com\nport: 1080\n")
         let previous = ChainProxySettings(enabled: initiallyEnabled, id: UUID(), front: front, landing: oldLanding)
         try ChainProxyConfigService.writeSettings(previous, workingDirectory: root)
@@ -279,10 +329,10 @@ struct ChainProxyViewModelTests {
         try self.source.write(to: config, atomically: true, encoding: .utf8)
         _ = model.configService.reloadConfigs()
         model.configService.selectConfig(config)
-        let nodes = try ChainProxyConfigService.load(
-            configURL: config, workingDirectory: model.workingDirectoryManager.rootDirectoryURL).nodes
-        let front = try #require(nodes.first { $0.name == "Front" })
-        let landing = try #require(nodes.first { $0.name == "Exit" })
+        let front = try ChainProxyConfigService.makeNode(
+            name: "Front", yaml: "type: socks5\nserver: front.example.com\nport: 1080")
+        let landing = try ChainProxyConfigService.makeNode(
+            name: "Exit", yaml: "type: socks5\nserver: exit.example.com\nport: 1080")
         return (model, config, front, landing)
     }
 
@@ -390,6 +440,10 @@ private final class ChainAPIState: @unchecked Sendable {
             self.failNextPUT = false
             self.recordedRequests.removeAll()
         }
+    }
+
+    func failNextConfigPUT() {
+        self.lock.withLock { self.failNextPUT = true }
     }
 
     func configureRemoteProbe(pause: ChainValidationPause, failPUT: Bool) {

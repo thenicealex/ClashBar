@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import Testing
 import Yams
@@ -22,11 +21,7 @@ struct ChainProxyConfigServiceTests {
 
     @Test func composesCorrectDirectionAndPreservesRouting() throws {
         try self.withFixture { root, configURL in
-            let snapshot = try ChainProxyConfigService.load(configURL: configURL, workingDirectory: root)
-            #expect(snapshot.nodes.count == 3)
-            let reloaded = try ChainProxyConfigService.load(configURL: configURL, workingDirectory: root)
-            #expect(snapshot.nodes.map(\.yaml) == reloaded.nodes.map(\.yaml))
-            let settings = try self.settings(from: snapshot)
+            let settings = try self.settings()
             let yaml = try ChainProxyConfigService.compose(sourceYAML: self.source, settings: settings)
             let generated = try #require(try Yams.load(yaml: yaml) as? [String: Any])
             let proxies = try #require(generated["proxies"] as? [[String: Any]])
@@ -52,8 +47,7 @@ struct ChainProxyConfigServiceTests {
 
     @Test func rejectsSameNode() throws {
         try self.withFixture { root, configURL in
-            let snapshot = try ChainProxyConfigService.load(configURL: configURL, workingDirectory: root)
-            let node = try #require(snapshot.nodes.first)
+            let node = try self.settings().front
             let invalid = ChainProxySettings(enabled: true, id: UUID(), front: node, landing: node)
             #expect(throws: ChainProxyConfigError.self) {
                 try ChainProxyConfigService.compose(sourceYAML: self.source, settings: invalid)
@@ -63,8 +57,7 @@ struct ChainProxyConfigServiceTests {
 
     @Test func savedNodesSurviveUpdatesAndAirportSwitches() throws {
         try self.withFixture { root, configURL in
-            let snapshot = try ChainProxyConfigService.load(configURL: configURL, workingDirectory: root)
-            let settings = try self.settings(from: snapshot)
+            let settings = try self.settings()
             try ChainProxyConfigService.writeSettings(settings, workingDirectory: root)
             let saved = try #require(try ChainProxyConfigService.readSettings(workingDirectory: root))
             #expect(saved == settings)
@@ -93,8 +86,7 @@ struct ChainProxyConfigServiceTests {
 
     @Test func disablingRestoresExactAirportConfigAndRetainsNodes() throws {
         try self.withFixture { root, configURL in
-            let snapshot = try ChainProxyConfigService.load(configURL: configURL, workingDirectory: root)
-            var settings = try self.settings(from: snapshot)
+            var settings = try self.settings()
             settings.enabled = false
             try ChainProxyConfigService.writeSettings(settings, workingDirectory: root)
             let saved = try #require(try ChainProxyConfigService.readSettings(workingDirectory: root))
@@ -107,93 +99,131 @@ struct ChainProxyConfigServiceTests {
         }
     }
 
-    @Test func readsInlineFileAndDefaultHTTPCacheProviders() throws {
+    @Test func manualNodeLibraryPersistsEditsAndDeletesIndependently() throws {
         try self.withFixture { root, configURL in
-            let cache = "proxies:\n  - {name: Cached, type: socks5, server: cached.example.com, port: 1080}\n"
-            try cache.write(to: root.appendingPathComponent("provider.yaml"), atomically: true, encoding: .utf8)
-            let url = "https://example.com/subscription"
-            let hash = Insecure.MD5.hash(data: Data(url.utf8)).map { String(format: "%02x", $0) }.joined()
-            let cacheDirectory = root.appendingPathComponent("proxies")
-            try FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
-            try cache.write(to: cacheDirectory.appendingPathComponent(hash), atomically: true, encoding: .utf8)
-            let providers = """
-
-            proxy-providers:
-              Inline:
-                type: inline
-                payload:
-                  - {name: Inline, type: socks5, server: inline.example.com, port: 1080}
-                override: {additional-prefix: '[I] ', udp: false}
-              File: {type: file, path: provider.yaml}
-              HTTP: {type: http, url: 'https://example.com/subscription'}
-              Missing: {type: file, path: unavailable.yaml}
-              Expression: {type: inline, override: {override-expr: '.port = 443'}}
-            """
-            try (self.source + providers).write(to: configURL, atomically: true, encoding: .utf8)
-            let snapshot = try ChainProxyConfigService.load(configURL: configURL, workingDirectory: root)
-            #expect(snapshot.unavailableProviders == ["Expression", "Missing"])
-            #expect(snapshot.nodes.contains { $0.id == "provider:source.yaml:File/Cached" })
-            #expect(snapshot.nodes.contains { $0.id == "provider:source.yaml:HTTP/Cached" })
-            let inline = try #require(snapshot.nodes.first { $0.id == "provider:source.yaml:Inline/[I] Inline" })
-            let parsed = try #require(try Yams.load(yaml: inline.yaml) as? [String: Any])
-            #expect(parsed["udp"] as? Bool == false)
-            let cached = try #require(snapshot.nodes.first { $0.id == "provider:source.yaml:File/Cached" })
-            let settings = ChainProxySettings(enabled: true, id: UUID(), front: inline, landing: cached)
-            try ChainProxyConfigService.writeSettings(settings, workingDirectory: root)
-            try FileManager.default.removeItem(at: root.appendingPathComponent("provider.yaml"))
-            try FileManager.default.removeItem(at: cacheDirectory)
+            let settings = try self.settings()
+            let nodes = [settings.front, settings.landing]
+            #expect(try ChainProxyConfigService.readNodes(workingDirectory: root, settings: nil).isEmpty)
+            let disabled = ChainProxySettings(id: UUID(), front: settings.front, landing: settings.landing)
+            #expect(!disabled.enabled)
+            try ChainProxyConfigService.writeNodes(nodes, workingDirectory: root)
             try FileManager.default.removeItem(at: configURL)
-            let saved = try #require(try ChainProxyConfigService.readSettings(workingDirectory: root))
-            let yaml = try ChainProxyConfigService.compose(sourceYAML: self.airportB, settings: saved)
-            let generated = try #require(try Yams.load(yaml: yaml) as? [String: Any])
-            let proxies = try #require(generated["proxies"] as? [[String: Any]])
-            let front = proxies[proxies.count - 2]
-            let landing = try #require(proxies.last)
-            #expect(landing["dialer-proxy"] as? String == front["name"] as? String)
-            #expect(landing["server"] as? String == "cached.example.com")
-            #expect(front["udp"] as? Bool == false)
+            #expect(try ChainProxyConfigService.readNodes(workingDirectory: root, settings: nil) == nodes)
+            let edited = try ChainProxyConfigService.makeNode(
+                id: settings.front.id, name: "Edited Front", yaml: "type: http\nserver: new.example.com\nport: '8080'")
+            try ChainProxyConfigService.writeNodes([edited, settings.landing], workingDirectory: root)
+            let reloaded = try ChainProxyConfigService.readNodes(workingDirectory: root, settings: nil)
+            #expect(reloaded.first == edited)
+            #expect(reloaded.last == settings.landing)
+            try ChainProxyConfigService.writeNodes([], workingDirectory: root)
+            #expect(try ChainProxyConfigService.readNodes(workingDirectory: root, settings: settings).isEmpty)
+            let path = root.appendingPathComponent("state/chain-proxy-nodes.json").path
+            #expect(try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? Int == 0o600)
         }
     }
 
-    @Test func filtersNodesAndRejectsProviderPathEscapes() throws {
-        try self.withFixture { root, configURL in
-            let providers = """
+    @Test func manualNodesRejectInvalidParametersAndDuplicateNames() throws {
+        try self.withFixture { root, _ in
+            let invalidYAML = [
+                "proxies: []",
+                "type: socks5\nserver: s\nport: 0",
+                "type: socks5\nserver: s\nport: 65536",
+                "type: socks5\nserver: s\nport: 1080\ndialer-proxy: dependent",
+                "type: [invalid]",
+            ]
+            for yaml in invalidYAML {
+                #expect(throws: ChainProxyConfigError.self) {
+                    try ChainProxyConfigService.makeNode(name: "Node", yaml: yaml)
+                }
+            }
+            #expect(throws: ChainProxyConfigError.self) {
+                try ChainProxyConfigService.makeNode(name: " ", yaml: "type: socks5\nserver: s\nport: 1080")
+            }
+            let node = try self.settings().front
+            try ChainProxyConfigService.writeNodes([node], workingDirectory: root)
+            let duplicate = try ChainProxyConfigService.makeNode(name: node.name, yaml: node.yaml)
+            #expect(throws: ChainProxyConfigError.self) {
+                try ChainProxyConfigService.writeNodes([node, duplicate], workingDirectory: root)
+            }
+            #expect(try ChainProxyConfigService.readNodes(workingDirectory: root, settings: nil) == [node])
+            let library = root.appendingPathComponent("state/chain-proxy-nodes.json")
+            try "invalid JSON".write(to: library, atomically: true, encoding: .utf8)
+            #expect(throws: (any Error).self) {
+                try ChainProxyConfigService.readNodes(workingDirectory: root, settings: self.settings())
+            }
+        }
+    }
 
-            proxy-providers:
-              Filtered:
-                type: inline
-                filter: '^JP`^香港'
-                exclude-filter: 'Slow`禁止'
-                exclude-type: http
-                override: {additional-prefix: '[Filtered] '}
-                payload:
-                  - {name: JP Fast, type: socks5, server: fast.example.com, port: 1080}
-                  - {name: JP Slow, type: socks5, server: slow.example.com, port: 1080}
-                  - {name: JP HTTP, type: http, server: http.example.com, port: 1080}
-                  - {name: US Fast, type: socks5, server: us.example.com, port: 1080}
-                  - {name: 香港 快, type: socks5, server: hk.example.com, port: 1080}
-                  - {name: 香港 禁止, type: socks5, server: excluded.example.com, port: 1080}
-              InvalidInclude:
-                type: inline
-                filter: '['
-                payload: [{name: JP Invalid, type: socks5, server: invalid.example.com, port: 1080}]
-              InvalidExclude:
-                type: inline
-                exclude-filter: '['
-                payload: [{name: JP Invalid, type: socks5, server: invalid.example.com, port: 1080}]
-              Escape: {type: file, path: '../outside.yaml'}
-              Chained:
-                type: inline
-                dialer-proxy: 'Front #1'
-                payload:
-                  - {name: Chained, type: socks5, server: chain.example.com, port: 1080}
-            """
-            try (self.source + providers).write(to: configURL, atomically: true, encoding: .utf8)
-            let snapshot = try ChainProxyConfigService.load(configURL: configURL, workingDirectory: root)
-            let names = snapshot.nodes.filter { $0.source.hasSuffix(" · Filtered") }.map(\.name)
-            #expect(Set(names) == Set(["[Filtered] JP Fast", "[Filtered] 香港 快"]))
-            #expect(snapshot.nodes.allSatisfy { !$0.source.hasSuffix(" · Chained") })
-            #expect(snapshot.unavailableProviders == ["Escape", "InvalidExclude", "InvalidInclude"])
+    @Test func existingSavedNodesRemainAvailableWithoutAnAirport() throws {
+        try self.withFixture { root, configURL in
+            let settings = try self.settings()
+            try ChainProxyConfigService.writeSettings(settings, workingDirectory: root)
+            try FileManager.default.removeItem(at: configURL)
+            let saved = try ChainProxyConfigService.readSettings(workingDirectory: root)
+            #expect(try ChainProxyConfigService.readNodes(workingDirectory: root, settings: saved)
+                == [settings.front, settings.landing])
+        }
+    }
+
+    @Test(arguments: [true, false])
+    func sameNameLegacyNodesSupportAddingAndEditing(addNode: Bool) throws {
+        try self.withFixture { root, configURL in
+            let front = ChainProxyNode(id: "legacy-front", name: "Shared Name", yaml: """
+            # Original front parameters
+            name: Shared Name
+            type: socks5
+            server: front.example.com
+            port: '1080'
+            username: front-user
+            password: 'secret: #front'
+            udp: true
+            """)
+            let landing = ChainProxyNode(id: "legacy-exit", name: "Shared Name", yaml: """
+            # Original nested parameters
+            name: Shared Name
+            type: ss
+            server: exit.example.com
+            port: 443
+            cipher: aes-128-gcm
+            password: 'secret: #exit'
+            plugin: v2ray-plugin
+            plugin-opts:
+              mode: websocket
+              host: cdn.example.com
+              tls: true
+              path: /ws
+            """)
+            let settings = ChainProxySettings(enabled: true, id: UUID(), front: front, landing: landing)
+            try ChainProxyConfigService.writeSettings(settings, workingDirectory: root)
+            try FileManager.default.removeItem(at: configURL)
+            let saved = try ChainProxyConfigService.readSettings(workingDirectory: root)
+            let migrated = try ChainProxyConfigService.readNodes(workingDirectory: root, settings: saved)
+            #expect(migrated.map(\.id) == [front.id, landing.id])
+            #expect(Set(migrated.map(\.name)).count == 2)
+            #expect(migrated.map(\.yaml) == [front.yaml, landing.yaml])
+            #expect(try ChainProxyConfigService.readNodes(workingDirectory: root, settings: saved) == migrated)
+
+            var updated = migrated
+            if addNode {
+                updated.append(try ChainProxyConfigService.makeNode(
+                    name: "Added Node", yaml: "type: http\nserver: added.example.com\nport: 8080"))
+            } else {
+                updated[1] = try ChainProxyConfigService.makeNode(
+                    id: migrated[1].id, name: migrated[1].name,
+                    yaml: landing.yaml.replacingOccurrences(of: "exit.example.com", with: "updated.example.com"))
+                var expected = try #require(try Yams.load(yaml: landing.yaml) as? [String: Any])
+                expected["name"] = migrated[1].name
+                expected["server"] = "updated.example.com"
+                let actual = try #require(try Yams.load(yaml: updated[1].yaml) as? [String: Any])
+                #expect(NSDictionary(dictionary: expected).isEqual(to: actual))
+            }
+            try ChainProxyConfigService.writeNodes(updated, workingDirectory: root)
+            let reloaded = try ChainProxyConfigService.readNodes(workingDirectory: root, settings: saved)
+            #expect(reloaded == updated)
+            #expect(Array(reloaded.prefix(2)).map(\.id) == [front.id, landing.id])
+            #expect(reloaded[0].yaml == front.yaml)
+            if addNode { #expect(reloaded[1].yaml == landing.yaml) }
+            #expect(try ChainProxyConfigService.readSettings(workingDirectory: root) == settings)
         }
     }
 
@@ -201,7 +231,7 @@ struct ChainProxyConfigServiceTests {
         try self.withFixture { root, configURL in
             try "proxies: [invalid".write(to: configURL, atomically: true, encoding: .utf8)
             #expect(throws: ChainProxyConfigError.self) {
-                try ChainProxyConfigService.load(configURL: configURL, workingDirectory: root)
+                try ChainProxyConfigService.compose(sourceYAML: "proxies: [invalid", settings: self.settings())
             }
             let url = ChainProxyConfigService.settingsURL(workingDirectory: root)
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -214,7 +244,7 @@ struct ChainProxyConfigServiceTests {
 
     @Test func preservesDirectRejectLogicalAndSubRules() throws {
         try self.withFixture { root, configURL in
-            let settings = try self.settings(from: ChainProxyConfigService.load(configURL: configURL, workingDirectory: root))
+            let settings = try self.settings()
             let yaml = try ChainProxyConfigService.compose(sourceYAML: self.airportB, settings: settings)
             let config = try #require(try Yams.load(yaml: yaml) as? [String: Any])
             let groups = try #require(config["proxy-groups"] as? [[String: Any]])
@@ -238,7 +268,7 @@ struct ChainProxyConfigServiceTests {
     func composedAirportsPassMihomoValidation() throws {
         let binary = try #require(ProcessInfo.processInfo.environment["CLASHBAR_TEST_MIHOMO"])
         try self.withFixture { root, configURL in
-            let settings = try self.settings(from: ChainProxyConfigService.load(configURL: configURL, workingDirectory: root))
+            let settings = try self.settings()
             for source in [self.source, self.airportB] {
                 try source.write(to: configURL, atomically: true, encoding: .utf8)
                 let runtimeURL = try ChainProxyConfigService.prepareRuntimeConfig(
@@ -276,9 +306,11 @@ struct ChainProxyConfigServiceTests {
       UDP: ["DST-PORT,53,DIRECT", "MATCH,B Select"]
     """
 
-    private func settings(from snapshot: ChainProxyConfigSnapshot) throws -> ChainProxySettings {
-        let front = try #require(snapshot.nodes.first { $0.name == "Front #1" })
-        let landing = try #require(snapshot.nodes.first { $0.name == "Exit, \"JP\"" })
+    private func settings() throws -> ChainProxySettings {
+        let front = try ChainProxyConfigService.makeNode(
+            name: "Front #1", yaml: "type: socks5\nserver: 127.0.0.1\nport: 1080")
+        let landing = try ChainProxyConfigService.makeNode(
+            name: "Exit, \"JP\"", yaml: "type: ss\nserver: exit.example.com\nport: 443\ncipher: aes-128-gcm\npassword: 'secret: #value'")
         return ChainProxySettings(enabled: true, id: UUID(), front: front, landing: landing)
     }
 

@@ -5,18 +5,11 @@ import Yams
 struct ChainProxyNode: Identifiable, Codable, Equatable, Sendable {
     let id: String
     let name: String
-    let source: String
     let yaml: String
 }
 
-struct ChainProxyConfigSnapshot: Sendable {
-    let sourceURL: URL
-    let nodes: [ChainProxyNode]
-    let unavailableProviders: [String]
-}
-
 struct ChainProxySettings: Codable, Equatable, Sendable {
-    var enabled: Bool
+    var enabled: Bool = false
     let id: UUID
     let front: ChainProxyNode
     let landing: ChainProxyNode
@@ -27,48 +20,61 @@ enum ChainProxyConfigError: Error {
     case invalidSelection
     case sourceChanged
     case invalidSavedSettings
+    case invalidNodeConfig
+    case invalidNodeLink
+    case unsupportedNodeForm
 }
 
 enum ChainProxyConfigService {
-    static func load(configURL: URL, workingDirectory: URL) throws -> ChainProxyConfigSnapshot {
-        let raw = try String(contentsOf: configURL, encoding: .utf8)
-        let config = try self.parse(raw)
+    static func makeNode(id: String = UUID().uuidString, name: String, yaml: String) throws -> ChainProxyNode {
+        do {
+            var proxy = try self.parse(yaml)
+            let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !id.isEmpty, !name.isEmpty,
+                  let type = proxy["type"] as? String, !type.isEmpty,
+                  !["direct", "reject", "reject-drop", "pass"].contains(type.lowercased()),
+                  !(proxy["server"] as? String ?? "").trimmingCharacters(in: .whitespaces).isEmpty,
+                  let port = proxy["port"] as? Int ?? Int(proxy["port"] as? String ?? ""), (1...65535).contains(port),
+                  (proxy["dialer-proxy"] as? String ?? "").isEmpty
+            else { throw ChainProxyConfigError.invalidNodeConfig }
+            proxy["name"] = name
+            return ChainProxyNode(
+                id: id, name: name, yaml: try Yams.dump(object: proxy, allowUnicode: true, sortKeys: true))
+        } catch {
+            throw ChainProxyConfigError.invalidNodeConfig
+        }
+    }
 
-        var nodes = try self.nodes(
-            from: config["proxies"] as? [[String: Any]] ?? [],
-            source: configURL.lastPathComponent,
-            idPrefix: "config:\(configURL.lastPathComponent)")
-        var unavailableProviders: [String] = []
-        let providers = config["proxy-providers"] as? [String: [String: Any]] ?? [:]
-        for name in providers.keys.sorted() {
-            guard let provider = providers[name] else { continue }
-            do {
-                // Expressions require mihomo's own evaluator. Do not silently copy unmodified nodes.
-                var override = provider["override"] as? [String: Any] ?? [:]
-                if override["dialer-proxy"] == nil { override["dialer-proxy"] = provider["dialer-proxy"] }
-                guard override["override-expr"] == nil, provider["age-secret-key"] == nil else {
-                    throw ChainProxyConfigError.invalidConfig
-                }
-                let payload = try self.providerPayload(provider, workingDirectory: workingDirectory)
-                // mihomo filters raw names before applying provider overrides.
-                let filtered = try payload.filter { try self.includes($0, provider: provider) }
-                let overridden = try filtered.map { try self.applyOverride(override, to: $0) }
-                nodes += try self.nodes(
-                    from: overridden,
-                    source: "\(configURL.lastPathComponent) · \(name)",
-                    idPrefix: "provider:\(configURL.lastPathComponent):\(name)")
-            } catch {
-                unavailableProviders.append(name)
+    static func readNodes(workingDirectory: URL, settings: ChainProxySettings?) throws -> [ChainProxyNode] {
+        let url = self.nodesURL(workingDirectory: workingDirectory)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            // Keep nodes saved by earlier versions available without consulting the airport profile.
+            var names: Set<String> = []
+            return (settings.map { [$0.front, $0.landing] } ?? []).map { node in
+                ChainProxyNode(id: node.id, name: self.uniqueName(node.name, names: &names), yaml: node.yaml)
             }
         }
-        nodes.sort {
-            if $0.name == $1.name { return $0.source.localizedStandardCompare($1.source) == .orderedAscending }
-            return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        let nodes = try JSONDecoder().decode([ChainProxyNode].self, from: Data(contentsOf: url))
+        try self.validateNodes(nodes)
+        return nodes
+    }
+
+    static func writeNodes(_ nodes: [ChainProxyNode], workingDirectory: URL) throws {
+        try self.validateNodes(nodes)
+        let url = self.nodesURL(workingDirectory: workingDirectory)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try self.writePrivateData(JSONEncoder().encode(nodes), to: url)
+    }
+
+    private static func nodesURL(workingDirectory: URL) -> URL {
+        workingDirectory.appendingPathComponent("state").appendingPathComponent("chain-proxy-nodes.json")
+    }
+
+    private static func validateNodes(_ nodes: [ChainProxyNode]) throws {
+        guard Set(nodes.map(\.id)).count == nodes.count, Set(nodes.map(\.name)).count == nodes.count else {
+            throw ChainProxyConfigError.invalidNodeConfig
         }
-        return ChainProxyConfigSnapshot(
-            sourceURL: configURL,
-            nodes: nodes,
-            unavailableProviders: unavailableProviders)
+        for node in nodes { _ = try self.makeNode(id: node.id, name: node.name, yaml: node.yaml) }
     }
 
     static func settingsURL(workingDirectory: URL) -> URL {
@@ -191,98 +197,6 @@ enum ChainProxyConfigService {
         } catch {
             // Parser diagnostics can contain credentials from the YAML source.
             throw ChainProxyConfigError.invalidConfig
-        }
-    }
-
-    private static func nodes(
-        from proxies: [[String: Any]], source: String, idPrefix: String) throws -> [ChainProxyNode]
-    {
-        var names: Set<String> = []
-        return try proxies.compactMap { proxy in
-            guard let name = proxy["name"] as? String,
-                  let type = proxy["type"] as? String,
-                  !["direct", "reject", "reject-drop", "pass"].contains(type.lowercased()),
-                  proxy["server"] as? String != nil,
-                  (proxy["dialer-proxy"] as? String ?? "").isEmpty,
-                  names.insert(name).inserted
-            else { return nil }
-            return ChainProxyNode(
-                id: "\(idPrefix)/\(name)",
-                name: name,
-                source: source,
-                yaml: try Yams.dump(object: proxy, allowUnicode: true, sortKeys: true))
-        }
-    }
-
-    private static func providerPayload(
-        _ provider: [String: Any], workingDirectory: URL) throws -> [[String: Any]]
-    {
-        if provider["type"] as? String == "inline" {
-            return provider["payload"] as? [[String: Any]] ?? []
-        }
-        let path: URL
-        if let configuredPath = provider["path"] as? String, !configuredPath.isEmpty {
-            path = configuredPath.hasPrefix("/")
-                ? URL(fileURLWithPath: configuredPath).standardizedFileURL
-                : workingDirectory.appendingPathComponent(configuredPath).standardizedFileURL
-        } else if provider["type"] as? String == "http", let url = provider["url"] as? String {
-            // Match mihomo's default HTTP provider cache path: <home>/proxies/<MD5(url)>.
-            let hash = Insecure.MD5.hash(data: Data(url.utf8)).map { String(format: "%02x", $0) }.joined()
-            path = workingDirectory.appendingPathComponent("proxies").appendingPathComponent(hash)
-        } else {
-            throw ChainProxyConfigError.invalidConfig
-        }
-        let root = workingDirectory.resolvingSymlinksInPath().standardizedFileURL.pathComponents
-        let resolved = path.resolvingSymlinksInPath().standardizedFileURL
-        guard resolved.pathComponents.starts(with: root) else { throw ChainProxyConfigError.invalidConfig }
-        do {
-            let config = try self.parse(String(contentsOf: resolved, encoding: .utf8))
-            guard let proxies = config["proxies"] as? [[String: Any]] else {
-                throw ChainProxyConfigError.invalidConfig
-            }
-            return proxies
-        } catch {
-            if let fallback = provider["payload"] as? [[String: Any]] { return fallback }
-            throw ChainProxyConfigError.invalidConfig
-        }
-    }
-
-    private static func applyOverride(_ override: [String: Any], to node: [String: Any]) throws -> [String: Any] {
-        var result = node
-        let supportedKeys = [
-            "tfo", "mptcp", "udp", "udp-over-tcp", "up", "down", "skip-cert-verify",
-            "name-cert-verify", "dialer-proxy", "interface-name", "routing-mark", "ip-version",
-        ]
-        for key in supportedKeys where override[key] != nil { result[key] = override[key] }
-        var name = node["name"] as? String ?? ""
-        for replacement in override["proxy-name"] as? [[String: String]] ?? [] {
-            if let pattern = replacement["pattern"], let target = replacement["target"] {
-                let regex = try NSRegularExpression(pattern: pattern)
-                name = regex.stringByReplacingMatches(
-                    in: name, range: NSRange(name.startIndex..., in: name), withTemplate: target)
-            }
-        }
-        result["name"] = (override["additional-prefix"] as? String ?? "")
-            + name + (override["additional-suffix"] as? String ?? "")
-        return result
-    }
-
-    private static func includes(_ node: [String: Any], provider: [String: Any]) throws -> Bool {
-        let name = node["name"] as? String ?? ""
-        if let pattern = provider["filter"] as? String, !pattern.isEmpty {
-            if try !self.matchesProviderPattern(pattern, name: name) { return false }
-        }
-        if let pattern = provider["exclude-filter"] as? String, !pattern.isEmpty {
-            if try self.matchesProviderPattern(pattern, name: name) { return false }
-        }
-        let excludedTypes = (provider["exclude-type"] as? String ?? "").lowercased().split(separator: "|")
-        return !excludedTypes.contains(Substring((node["type"] as? String ?? "").lowercased()))
-    }
-
-    private static func matchesProviderPattern(_ pattern: String, name: String) throws -> Bool {
-        let range = NSRange(name.startIndex..., in: name)
-        return try pattern.split(separator: "`").contains {
-            try NSRegularExpression(pattern: String($0)).firstMatch(in: name, range: range) != nil
         }
     }
 
