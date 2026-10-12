@@ -418,25 +418,23 @@
 "log.config.delete.failed" = "Failed to delete config (%@): %@";
 
 "ui.chain.title" = "Chain Proxy";
-"ui.chain.front" = "Front node";
 "ui.chain.landing" = "Exit node";
 "ui.chain.choose" = "Choose a node";
-"ui.chain.path" = "This Mac → %@ → %@ → Destination (exit IP from the exit node)";
-"ui.chain.no_nodes" = "Add your nodes, then choose the front and exit nodes.";
+"ui.chain.no_nodes" = "Add an exit node, then click it to select.";
 "ui.chain.close" = "Close";
 "ui.chain.load_failed" = "Cannot read the configuration. Check its YAML file.";
-"ui.chain.invalid_selection" = "Choose two different, valid nodes.";
+"ui.chain.invalid_selection" = "Choose an exit node before enabling chain proxy.";
 "ui.chain.source_changed" = "The profile or runtime state changed while saving. Please try again.";
 "ui.chain.save_failed" = "Could not save or apply the chain: %@";
 "ui.chain.enabled" = "Enable chain proxy";
 "ui.chain.active" = "Enabled";
 "ui.chain.saved_load_failed" = "Cannot read saved chain settings. Choose nodes and enable again. The core will not silently bypass the chain when saved settings are corrupt.";
 "ui.chain.rollback_failed" = "Applying the chain failed and the previous runtime could not be restored. Saved settings are unchanged. Restart the core.";
-"ui.chain.nodes" = "Nodes";
+"ui.chain.nodes" = "Exit Nodes";
 "ui.chain.node_add" = "Add Node";
 "ui.chain.node_edit" = "Edit Node";
 "ui.chain.node_name" = "Node name";
-"ui.chain.node_config" = "Single node configuration (YAML)";
+"ui.chain.node_config" = "YAML";
 "ui.chain.node_invalid" = "Enter a unique node name, protocol, server and a valid port. Do not set dialer-proxy.";
 "ui.chain.nodes_load_failed" = "Cannot read the node library. Saved chain settings are preserved. Check the library file.";
 "ui.chain.nodes_save_failed" = "Cannot save nodes. Check their configurations and duplicate names.";
@@ -455,3 +453,45 @@
 "ui.chain.link_parse" = "Parse Link";
 "ui.chain.link_invalid" = "Cannot import this link. Use a single SOCKS5, HTTP/HTTPS or Shadowsocks link with a valid server and port. Plugins, query parameters and other protocols require YAML.";
 "ui.chain.form_unsupported" = "This protocol requires YAML editing. All parameters are preserved.";
+
+"log.chain.enable" = "Enable";
+"log.chain.disable" = "Disable";
+"log.chain.validate" = "Validate configuration";
+"log.chain.apply" = "Apply runtime configuration";
+"log.chain.save" = "Save settings";
+"log.chain.rollback" = "Restore previous configuration";
+"log.chain.load_nodes" = "Load node library";
+"log.chain.save_nodes" = "Save node library";
+"log.chain.started" = "Chain Proxy — %@: started";
+"log.chain.succeeded" = "Chain Proxy — %@: success";
+"log.chain.failed" = "Chain Proxy — %@ failed: %@";
+
+// Chain proxy editor
+"ui.chain.reload_nodes" = "Reload Node List";
+"ui.chain.required" = "· Required";
+"ui.chain.optional" = "· Optional";
+"ui.chain.name_placeholder" = "e.g. Singapore Proxy";
+"ui.chain.name_detected" = "Auto-detected";
+"ui.chain.connection" = "Connection";
+"ui.chain.authentication" = "Authentication";
+"ui.chain.security" = "Security";
+"ui.chain.tls_hint" = "Enable only if the proxy server supports TLS";
+"ui.chain.reset" = "Reset";
+"ui.chain.link_protocols" = "SOCKS5 · HTTP(S) · Shadowsocks";
+"ui.chain.clear" = "Clear";
+"ui.chain.copy" = "Copy YAML";
+"ui.chain.use_example" = "Example";
+"ui.chain.valid" = "Valid";
+"ui.chain.not_validated" = "Not validated";
+"ui.chain.yaml_stats" = "%d lines · %d chars";
+"ui.chain.yaml_validate" = "Validate YAML";
+"ui.chain.node_preview" = "Node Preview";
+"ui.chain.configured" = "Configured";
+"ui.chain.none" = "None";
+"ui.chain.disabled" = "Disabled";
+"ui.chain.select_exit" = "Select as exit node after adding";
+"ui.chain.select_exit_hint" = "Otherwise, keep the current exit node unchanged.";
+"ui.chain.latency_failed" = "Latency test failed. Check the node connection and local Mihomo core.";
+
+"log.chain.latency" = "Latency test";
+"ui.chain.latency_unavailable" = "The currently selected airport node is unavailable.";

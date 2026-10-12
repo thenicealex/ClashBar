@@ -10,8 +10,8 @@ struct ChainProxyViewModelTests {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: home) }
         let core = RecordingChainCore()
-        let (model, config, front, landing) = try self.configuredModel(home: home, core: core)
-        try await model.saveChainProxySettings(enabled: true, front: front, landing: landing)
+        let (model, config, landing) = try self.configuredModel(home: home, core: core)
+        try await model.saveChainProxySettings(enabled: true, landing: landing)
         #expect(model.configService.selectedConfig == config)
         #expect(model.configService.availableConfigs.map(\.lastPathComponent) == ["airport.yaml"])
         #expect(try String(contentsOf: config, encoding: .utf8) == self.source)
@@ -28,10 +28,10 @@ struct ChainProxyViewModelTests {
         #expect(core.validationPaths.last?.contains("/runtime/") == true)
         #expect(restored.chainProxySettings == model.chainProxySettings)
 
-        try await restored.saveChainProxySettings(enabled: false, front: front, landing: landing)
+        try await restored.saveChainProxySettings(enabled: false, landing: landing)
         #expect(try await restored.runtimeConfigPath(for: second.path) == second.path)
         #expect(core.validationPaths.last == second.path)
-        #expect(restored.chainProxySettings?.front == front)
+        #expect(restored.chainProxySettings?.landing == landing)
         #expect(restored.configService.selectedConfig == second)
     }
 
@@ -40,13 +40,13 @@ struct ChainProxyViewModelTests {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: home) }
         let core = RecordingChainCore(rejectsValidation: true)
-        let (model, config, front, landing) = try self.configuredModel(home: home, core: core)
+        let (model, config, landing) = try self.configuredModel(home: home, core: core)
         let root = model.workingDirectoryManager.rootDirectoryURL
-        let previous = ChainProxySettings(enabled: !enabled, id: UUID(), front: front, landing: landing)
+        let previous = ChainProxySettings(enabled: !enabled, id: UUID(), landing: landing)
         try ChainProxyConfigService.writeSettings(previous, workingDirectory: root)
         model.loadChainProxySettings()
         do {
-            try await model.saveChainProxySettings(enabled: enabled, front: front, landing: landing)
+            try await model.saveChainProxySettings(enabled: enabled, landing: landing)
             Issue.record("Expected validation to fail")
         } catch {
             #expect(model.chainProxySettings == previous)
@@ -62,11 +62,11 @@ struct ChainProxyViewModelTests {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: home) }
         let core = RecordingChainCore(running: true)
-        let (model, config, front, landing) = try self.configuredModel(home: home, core: core)
+        let (model, config, landing) = try self.configuredModel(home: home, core: core)
         let root = model.workingDirectoryManager.rootDirectoryURL
-        let previous = ChainProxySettings(enabled: !enabled, id: UUID(), front: front, landing: landing)
+        let previous = ChainProxySettings(enabled: !enabled, id: UUID(), landing: landing)
         try ChainProxyConfigService.writeSettings(previous, workingDirectory: root)
-        try ChainProxyConfigService.writeNodes([front, landing], workingDirectory: root)
+        try ChainProxyConfigService.writeNodes([landing], workingDirectory: root)
         model.loadChainProxySettings()
         let pause = ChainValidationPause()
         let session = self.configureAPI(for: model, pause: pause)
@@ -75,7 +75,7 @@ struct ChainProxyViewModelTests {
         if failSave { api.failNextConfigPUT() }
         let saving = Task { () -> Error? in
             do {
-                try await model.saveChainProxySettings(enabled: enabled, front: front, landing: landing)
+                try await model.saveChainProxySettings(enabled: enabled, landing: landing)
                 return nil
             } catch { return error }
         }
@@ -85,19 +85,23 @@ struct ChainProxyViewModelTests {
         #expect(model.isChainProxySaving)
         #expect(model.isRuntimeConfigUpdating)
         do {
-            try await model.saveChainProxySettings(enabled: enabled, front: front, landing: landing)
+            try await model.saveChainProxySettings(enabled: enabled, landing: landing)
             Issue.record("A second toggle must not overlap the pending apply")
         } catch {
             #expect(error is ChainProxyConfigError)
         }
         await pause.release()
         let error = await saving.value
+        if failSave {
+            #expect(model.errorLogs.contains { $0.level == "error" && $0.message.contains(model.tr("log.chain.apply")) })
+            #expect(model.errorLogs.contains { $0.level == "info" && $0.message.contains(model.tr("log.chain.rollback")) })
+        }
         #expect((error != nil) == failSave)
         let expected = failSave ? previous : ChainProxySettings(
-            enabled: enabled, id: previous.id, front: front, landing: landing)
+            enabled: enabled, id: previous.id, landing: landing)
         #expect(model.chainProxySettings == expected)
         #expect(try ChainProxyConfigService.readSettings(workingDirectory: root) == expected)
-        #expect(try ChainProxyConfigService.readNodes(workingDirectory: root, settings: expected) == [front, landing])
+        #expect(try ChainProxyConfigService.readNodes(workingDirectory: root, settings: expected) == [landing])
         #expect(model.configService.selectedConfig == config)
         #expect(api.appliedPaths.count == (failSave ? 2 : 1))
         let finalPath = try #require(api.appliedPaths.last)
@@ -112,12 +116,12 @@ struct ChainProxyViewModelTests {
         defer { try? FileManager.default.removeItem(at: home) }
         let pause = ChainValidationPause()
         let core = RecordingChainCore(running: true, pause: pause)
-        let (model, config, front, landing) = try self.configuredModel(home: home, core: core)
+        let (model, config, landing) = try self.configuredModel(home: home, core: core)
         let root = model.workingDirectoryManager.rootDirectoryURL
         let oldLanding = ChainProxyNode(
             id: "saved-old-exit", name: "Old Exit",
             yaml: "name: Old Exit\ntype: socks5\nserver: old-exit.example.com\nport: 1080\n")
-        let previous = ChainProxySettings(enabled: initiallyEnabled, id: UUID(), front: front, landing: oldLanding)
+        let previous = ChainProxySettings(enabled: initiallyEnabled, id: UUID(), landing: oldLanding)
         try ChainProxyConfigService.writeSettings(previous, workingDirectory: root)
         model.loadChainProxySettings()
 
@@ -133,14 +137,14 @@ struct ChainProxyViewModelTests {
             if reloadFirst {
                 await model.reloadConfig()
             } else {
-                try await model.saveChainProxySettings(enabled: true, front: front, landing: landing)
+                try await model.saveChainProxySettings(enabled: true, landing: landing)
             }
         }
         // Suspend the first transaction after it has captured a configuration, before any PUT.
         await pause.waitUntilPaused()
         let second = Task {
             if reloadFirst {
-                try await model.saveChainProxySettings(enabled: true, front: front, landing: landing)
+                try await model.saveChainProxySettings(enabled: true, landing: landing)
             } else {
                 await model.reloadConfig()
             }
@@ -159,14 +163,13 @@ struct ChainProxyViewModelTests {
         let yaml = try String(contentsOfFile: finalPath, encoding: .utf8)
         let runtime = try #require(try Yams.load(yaml: yaml) as? [String: Any])
         let proxies = try #require(runtime["proxies"] as? [[String: Any]])
-        let runtimeFront = proxies[proxies.count - 2]
-        let runtimeLanding = try #require(proxies.last)
+        let runtimeFront = try #require(proxies.first { $0["name"] as? String == "Front" })
+        let runtimeLanding = try #require(proxies.first { $0["dialer-proxy"] as? String == "Select" })
         #expect(runtimeFront["server"] as? String == "front.example.com")
         #expect(runtimeLanding["server"] as? String == "exit.example.com")
-        #expect(runtimeLanding["dialer-proxy"] as? String == runtimeFront["name"] as? String)
+        #expect(runtimeLanding["dialer-proxy"] as? String == "Select")
         let saved = try #require(try ChainProxyConfigService.readSettings(workingDirectory: root))
         #expect(saved.enabled)
-        #expect(saved.front == front)
         #expect(saved.landing == landing)
         #expect(model.chainProxySettings == saved)
         #expect(model.configService.selectedConfig == config)
@@ -181,7 +184,7 @@ struct ChainProxyViewModelTests {
         let validationPause = ChainValidationPause()
         let putPause = ChainValidationPause()
         let core = RecordingChainCore(running: true, pause: validationPause)
-        let (model, airportA, front, landing) = try self.configuredModel(home: home, core: core)
+        let (model, airportA, landing) = try self.configuredModel(home: home, core: core)
         let airportB = airportA.deletingLastPathComponent().appendingPathComponent("airport-b.yaml")
         let sourceB = """
         mixed-port: 7891
@@ -203,7 +206,7 @@ struct ChainProxyViewModelTests {
         let switching = Task { await model.selectConfigFile(named: "airport-b.yaml") }
         await validationPause.waitUntilPaused()
         let saving = Task {
-            try await model.saveChainProxySettings(enabled: true, front: front, landing: landing)
+            try await model.saveChainProxySettings(enabled: true, landing: landing)
         }
         // Complete switch validation while the save's PUT response is still suspended.
         await putPause.waitUntilPaused()
@@ -212,8 +215,9 @@ struct ChainProxyViewModelTests {
         #expect(model.configService.selectedConfig == selectedA)
         #expect(core.restartPaths.isEmpty)
         await putPause.release()
-        try await saving.value
+        let result = await saving.result
         await switching.value
+        try result.get()
 
         #expect(model.configService.selectedConfig?.lastPathComponent == "airport-b.yaml")
         #expect(core.restartPaths.count == 1)
@@ -222,15 +226,14 @@ struct ChainProxyViewModelTests {
         let runtime = try #require(try Yams.load(yaml: yaml) as? [String: Any])
         #expect(runtime["mixed-port"] as? Int == 7891)
         let proxies = try #require(runtime["proxies"] as? [[String: Any]])
-        let runtimeFront = proxies[proxies.count - 2]
-        let runtimeLanding = try #require(proxies.last)
-        #expect(runtimeFront["server"] as? String == "front.example.com")
+        let runtimeFront = try #require(proxies.first { $0["name"] as? String == "B Node" })
+        let runtimeLanding = try #require(proxies.first { $0["dialer-proxy"] as? String == "B Select" })
+        #expect(runtimeFront["server"] as? String == "b.example.com")
         #expect(runtimeLanding["server"] as? String == "exit.example.com")
-        #expect(runtimeLanding["dialer-proxy"] as? String == runtimeFront["name"] as? String)
+        #expect(runtimeLanding["dialer-proxy"] as? String == "B Select")
         let saved = try #require(try ChainProxyConfigService.readSettings(
             workingDirectory: model.workingDirectoryManager.rootDirectoryURL))
         #expect(saved.enabled)
-        #expect(saved.front == front)
         #expect(saved.landing == landing)
         #expect(model.chainProxySettings == saved)
         #expect(!model.isChainProxySaving)
@@ -242,9 +245,9 @@ struct ChainProxyViewModelTests {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: home) }
         let core = RecordingChainCore(running: true)
-        let (model, _, front, landing) = try self.configuredModel(home: home, core: core)
+        let (model, _, landing) = try self.configuredModel(home: home, core: core)
         let root = model.workingDirectoryManager.rootDirectoryURL
-        let previous = ChainProxySettings(enabled: false, id: UUID(), front: front, landing: landing)
+        let previous = ChainProxySettings(enabled: false, id: UUID(), landing: landing)
         try ChainProxyConfigService.writeSettings(previous, workingDirectory: root)
         model.loadChainProxySettings()
         let probePause = ChainValidationPause()
@@ -263,7 +266,7 @@ struct ChainProxyViewModelTests {
         await probePause.waitUntilPaused()
         let saving = Task { () -> Error? in
             do {
-                try await model.saveChainProxySettings(enabled: true, front: front, landing: landing)
+                try await model.saveChainProxySettings(enabled: true, landing: landing)
                 return nil
             } catch {
                 return error
@@ -297,6 +300,104 @@ struct ChainProxyViewModelTests {
         #expect(!model.isRuntimeConfigUpdating)
     }
 
+    @Test(arguments: [true, false])
+    func nodeSwitchWaitsForChainToggleAndFollowsTheAirportGroup(global: Bool) async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let (model, config, landing) = try self.configuredModel(home: home, core: RecordingChainCore(running: true))
+        let pause = ChainValidationPause()
+        let session = self.configureAPI(for: model, pause: pause)
+        defer { session.invalidateAndCancel() }
+        let api = ChainAPIProtocol.state
+        api.seedAirportSelections()
+        let saving = Task { try await model.saveChainProxySettings(enabled: true, landing: landing) }
+        await pause.waitUntilPaused()
+        let group = global ? "GLOBAL" : "Select"
+        let switching = Task { await model.switchProxy(group: group, target: "Front") }
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(model.chainProxySettings == nil)
+        await pause.release()
+        let result = await saving.result
+        await switching.value
+        try result.get()
+        let settings = try #require(model.chainProxySettings)
+        let actualGroup = global ? ChainProxyConfigService.globalFrontName(id: settings.id) : group
+        #expect(api.selectedNode(in: actualGroup) == "Front")
+        #expect(api.selectedNode(in: global ? "Select" : ChainProxyConfigService.globalFrontName(id: settings.id)) == "Exit")
+        #expect(model.proxyGroups.first { $0.name == "GLOBAL" }?.all == ["Select", "Front", "Exit", "DIRECT", "REJECT"])
+        #expect(api.appliedPaths.count == 1)
+        #expect(settings.landing == landing)
+        #expect(model.configService.selectedConfig == config)
+        #expect(!model.isChainProxySaving)
+        #expect(!model.isRuntimeConfigUpdating)
+        try await model.saveChainProxySettings(enabled: false, landing: landing)
+        #expect(api.selectedNode(in: group) == "Front")
+        #expect(api.appliedPaths.last == config.path)
+        #expect(model.chainProxySettings?.landing == landing)
+    }
+
+    @Test func chainFailuresAndConnectionErrorsPersistInExistingLogsWithoutCredentials() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let (model, _, _) = try self.configuredModel(home: home, core: RecordingChainCore(rejectsValidation: true))
+        let node = try ChainProxyConfigService.makeNode(
+            name: "Private Exit", yaml: "type: socks5\nserver: exit.example.com\nport: 443\nusername: private-user\npassword: private-password")
+        do {
+            try await model.saveChainProxySettings(enabled: true, landing: node)
+            Issue.record("Expected validation failure")
+        } catch {}
+        let details = "SOCKS auth private-user private-password timeout at exit.example.com:443"
+        model.logChainProxyFailure(operation: "log.chain.apply", error: APIError.statusCode(502, details))
+        model.logChainProxyFailure(operation: "log.chain.rollback", error: APIError.statusCode(503, details))
+        model.logChainProxyFailure(operation: "log.chain.latency", error: ChainProxyLatencyError.failed(details))
+        model.appendMihomoLog(level: "warning", message: "[TCP] dial Chain Proxy: " + details)
+        model.flushPendingMihomoLogsIfNeeded()
+        let messages = model.errorLogs.map(\.message)
+        #expect(messages.contains { $0.contains(model.tr("log.chain.validate")) })
+        #expect(messages.contains { $0.contains(model.tr("log.chain.apply")) && $0.contains("502") })
+        #expect(messages.contains { $0.contains(model.tr("log.chain.rollback")) && $0.contains("503") })
+        #expect(messages.contains { $0.contains(model.tr("log.chain.latency")) && $0.contains("timeout") })
+        #expect(model.errorLogs.contains { $0.source == .mihomo && $0.level == "warning" })
+        model.clashbarLogStore?.flush()
+        model.mihomoLogStore?.flush()
+        let logs = model.workingDirectoryManager.logsDirectoryURL
+        let persisted = try String(contentsOf: logs.appendingPathComponent("app.log"), encoding: .utf8)
+            + String(contentsOf: logs.appendingPathComponent("core.log"), encoding: .utf8)
+        for message in messages + [persisted] {
+            #expect(!message.contains("private-user"))
+            #expect(!message.contains("private-password"))
+        }
+        #expect(persisted.contains("timeout at exit.example.com:443"))
+    }
+
+    @Test(arguments: [true, false])
+    func persistenceAndRollbackFailuresAreLogged(rollbackFails: Bool) async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let (model, config, landing) = try self.configuredModel(home: home, core: RecordingChainCore(running: true))
+        let session = self.configureAPI(for: model)
+        defer { session.invalidateAndCancel() }
+        if rollbackFails {
+            ChainAPIProtocol.state.failNextConfigPUT(count: 2)
+        } else {
+            // Block only settings persistence after the runtime configuration was applied.
+            try FileManager.default.createDirectory(
+                at: ChainProxyConfigService.settingsURL(workingDirectory: model.workingDirectoryManager.rootDirectoryURL),
+                withIntermediateDirectories: true)
+        }
+        do {
+            try await model.saveChainProxySettings(enabled: true, landing: landing)
+            Issue.record("Expected apply or persistence failure")
+        } catch {}
+        let stage = model.tr(rollbackFails ? "log.chain.rollback" : "log.chain.save")
+        #expect(model.errorLogs.contains { $0.level == "error" && $0.message.contains(stage) })
+        #expect(ChainAPIProtocol.state.appliedPaths.count == 2)
+        #expect(model.chainProxySettings == nil)
+        #expect(model.configService.selectedConfig == config)
+        #expect(!model.isChainProxySaving)
+        #expect(!model.isRuntimeConfigUpdating)
+    }
+
     private func mockSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [ChainAPIProtocol.self]
@@ -322,18 +423,16 @@ struct ChainProxyViewModelTests {
     """
 
     private func configuredModel(home: URL, core: RecordingChainCore) throws
-        -> (AppViewModel, URL, ChainProxyNode, ChainProxyNode)
+        -> (AppViewModel, URL, ChainProxyNode)
     {
         let model = try self.model(home: home, core: core)
         let config = model.workingDirectoryManager.configDirectoryURL.appendingPathComponent("airport.yaml")
         try self.source.write(to: config, atomically: true, encoding: .utf8)
         _ = model.configService.reloadConfigs()
         model.configService.selectConfig(config)
-        let front = try ChainProxyConfigService.makeNode(
-            name: "Front", yaml: "type: socks5\nserver: front.example.com\nport: 1080")
         let landing = try ChainProxyConfigService.makeNode(
             name: "Exit", yaml: "type: socks5\nserver: exit.example.com\nport: 1080")
-        return (model, config, front, landing)
+        return (model, config, landing)
     }
 
     private func model(home: URL, core: RecordingChainCore) throws -> AppViewModel {
@@ -426,31 +525,63 @@ private final class ChainAPIState: @unchecked Sendable {
     private var paths: [String] = []
     private var nextPUTPause: ChainValidationPause?
     private var nextProbePause: ChainValidationPause?
-    private var failNextPUT = false
+    private var failedPUTsRemaining = 0
     private var recordedRequests: [(host: String, method: String)] = []
+
+    private var proxySnapshot: [String: [String: Any]] = [:]
+
+    func seedAirportSelections() {
+        self.lock.withLock {
+            self.proxySnapshot = [
+                "GLOBAL": ["name": "GLOBAL", "type": "Selector", "all": ["Select", "Front", "Exit"], "now": "Exit"],
+                "Select": ["name": "Select", "type": "Selector", "all": ["Front", "Exit"], "now": "Exit"],
+            ]
+        }
+    }
+
+    func selectedNode(in group: String) -> String? {
+        self.lock.withLock { self.proxySnapshot[group]?["now"] as? String }
+    }
 
     var requests: [(host: String, method: String)] { self.lock.withLock { self.recordedRequests } }
     var appliedPaths: [String] { self.lock.withLock { self.paths } }
 
     func reset(pause: ChainValidationPause? = nil) {
         self.lock.withLock {
+            self.proxySnapshot = [:]
             self.paths.removeAll()
             self.nextPUTPause = pause
             self.nextProbePause = nil
-            self.failNextPUT = false
+            self.failedPUTsRemaining = 0
             self.recordedRequests.removeAll()
         }
     }
 
-    func failNextConfigPUT() {
-        self.lock.withLock { self.failNextPUT = true }
+    func failNextConfigPUT(count: Int = 1) {
+        self.lock.withLock { self.failedPUTsRemaining = count }
     }
 
     func configureRemoteProbe(pause: ChainValidationPause, failPUT: Bool) {
         self.lock.withLock {
             self.nextProbePause = pause
-            self.failNextPUT = failPUT
+            self.failedPUTsRemaining = failPUT ? 1 : 0
         }
+    }
+
+    private func requestBody(_ request: URLRequest) throws -> Data {
+        if let data = request.httpBody { return data }
+        guard let stream = request.httpBodyStream else { throw URLError(.cannotDecodeRawData) }
+        stream.open()
+        defer { stream.close() }
+        var result = Data()
+        var buffer = [UInt8](repeating: 0, count: 1024)
+        while stream.hasBytesAvailable {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            guard count >= 0 else { throw URLError(.cannotDecodeRawData) }
+            if count == 0 { break }
+            result.append(contentsOf: buffer.prefix(count))
+        }
+        return result
     }
 
     func response(to request: URLRequest) async throws -> Data {
@@ -466,34 +597,32 @@ private final class ChainAPIState: @unchecked Sendable {
             await pause?.suspend()
         }
         if request.url?.path == "/configs", request.httpMethod == "PUT" {
-            let body: Data
-            if let data = request.httpBody {
-                body = data
-            } else if let stream = request.httpBodyStream {
-                stream.open()
-                defer { stream.close() }
-                var result = Data()
-                var buffer = [UInt8](repeating: 0, count: 1024)
-                while stream.hasBytesAvailable {
-                    let count = stream.read(&buffer, maxLength: buffer.count)
-                    guard count >= 0 else { throw URLError(.cannotDecodeRawData) }
-                    if count == 0 { break }
-                    result.append(contentsOf: buffer.prefix(count))
-                }
-                body = result
-            } else {
-                throw URLError(.cannotDecodeRawData)
-            }
+            let body = try self.requestBody(request)
             let payload = try JSONSerialization.jsonObject(with: body) as? [String: String]
             guard let path = payload?["path"] else { throw URLError(.cannotDecodeRawData) }
-            // The mock core loads the actual generated file supplied by the production API client.
-            _ = try Data(contentsOf: URL(fileURLWithPath: path))
+            // Model a reload that resets choices, so restoration must use the real selection API.
+            let yaml = try String(contentsOfFile: path, encoding: .utf8)
+            let config = try Yams.load(yaml: yaml) as? [String: Any] ?? [:]
+            let groups = config["proxy-groups"] as? [[String: Any]] ?? []
+            var snapshot: [String: [String: Any]] = [:]
+            for group in groups {
+                guard let name = group["name"] as? String else { continue }
+                let all = group["proxies"] as? [String] ?? []
+                snapshot[name] = ["name": name, "type": "Selector", "all": all, "now": all.first ?? "",
+                                  "hidden": group["hidden"] as? Bool ?? false]
+            }
+            if snapshot["GLOBAL"] == nil {
+                let names = groups.compactMap { $0["name"] as? String }
+                    + (config["proxies"] as? [[String: Any]] ?? []).compactMap { $0["name"] as? String }
+                snapshot["GLOBAL"] = ["name": "GLOBAL", "type": "Selector", "all": names, "now": names.first ?? ""]
+            }
+            self.lock.withLock { self.proxySnapshot = snapshot }
             let (pause, fail) = self.lock.withLock {
                 self.paths.append(path)
                 let pause = self.nextPUTPause
-                let fail = self.failNextPUT
+                let fail = self.failedPUTsRemaining > 0
                 self.nextPUTPause = nil
-                self.failNextPUT = false
+                if fail { self.failedPUTsRemaining -= 1 }
                 return (pause, fail)
             }
             await pause?.suspend()
@@ -504,7 +633,22 @@ private final class ChainAPIState: @unchecked Sendable {
             return Data("{\"mode\":\"rule\",\"tun\":{\"enable\":\(enabled)}}".utf8)
         }
         if request.url?.path == "/version" { return Data(#"{"version":"v1.19.27"}"#.utf8) }
-        if request.url?.path == "/proxies" { return Data(#"{"proxies":{}}"#.utf8) }
+        if request.url?.path == "/proxies" {
+            let snapshot = self.lock.withLock { self.proxySnapshot }
+            return try JSONSerialization.data(withJSONObject: ["proxies": snapshot])
+        }
+        if request.url?.path.hasPrefix("/proxies/") == true, request.httpMethod == "PUT" {
+            let data = try self.requestBody(request)
+            let body = try JSONSerialization.jsonObject(with: data) as? [String: String]
+            let group = request.url?.lastPathComponent ?? ""
+            guard let target = body?["name"] else { throw URLError(.cannotDecodeRawData) }
+            try self.lock.withLock {
+                guard (self.proxySnapshot[group]?["all"] as? [String])?.contains(target) == true else {
+                    throw URLError(.badServerResponse)
+                }
+                self.proxySnapshot[group]?["now"] = target
+            }
+        }
         if request.url?.path.hasPrefix("/providers/") == true { return Data(#"{"providers":{}}"#.utf8) }
         return Data("{}".utf8)
     }

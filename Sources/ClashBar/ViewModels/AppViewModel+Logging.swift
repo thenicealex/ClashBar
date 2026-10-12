@@ -28,6 +28,7 @@ extension AppViewModel {
     func appendLog(source: AppLogSource, level: String, message: String) {
         guard !message.isEmpty else { return }
 
+        let message = self.chainProxyLogRedactor.redact(message)
         let entry = AppErrorLogEntry(source: source, level: level, message: message)
         if source == .mihomo {
             self.enqueueBufferedMihomoLog(entry)

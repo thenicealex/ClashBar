@@ -331,18 +331,53 @@ extension AppViewModel {
             }
             let runtimePath = self.isRemoteTarget ? configPath : try await self.runtimeConfigPath(for: configPath)
             if !self.isRemoteTarget { try await self.processManager.validateConfig(configPath: runtimePath) }
-            try await self.clientOrThrow().requestNoResponse(.putConfigs(force: false, path: runtimePath, payload: nil))
-            try await self.restoreTunAfterConfigReloadIfNeeded(expectedEnabled: expectedTunEnabled)
+            if self.isRemoteTarget {
+                try await self.clientOrThrow().requestNoResponse(.putConfigs(force: false, path: runtimePath, payload: nil))
+                try await self.restoreTunAfterConfigReloadIfNeeded(expectedEnabled: expectedTunEnabled)
+            } else {
+                try await self.reloadLocalRuntimeConfig(
+                    configPath: runtimePath, from: self.chainProxySettings, to: self.chainProxySettings)
+            }
             appendLog(level: "info", message: tr("log.action.success", actionName))
         } catch {
             appendLog(level: "error", message: tr("log.action.failed", actionName, error.localizedDescription))
         }
     }
 
-    func reloadLocalRuntimeConfig(configPath: String) async throws {
+    func reloadLocalRuntimeConfig(
+        configPath: String, from previous: ChainProxySettings?, to settings: ChainProxySettings?) async throws
+    {
         guard !self.isRemoteTarget else { throw ChainProxyConfigError.sourceChanged }
+        let client = try self.clientOrThrow()
         let expectedTunEnabled = self.isTunEnabled
-        try await self.clientOrThrow().requestNoResponse(.putConfigs(force: false, path: configPath, payload: nil))
+        var selections: [String: String] = [:]
+        let previousGlobal = previous.flatMap {
+            $0.enabled ? ChainProxyConfigService.globalFrontName(id: $0.id) : nil
+        }
+        let nextGlobal = settings.flatMap {
+            $0.enabled ? ChainProxyConfigService.globalFrontName(id: $0.id) : nil
+        }
+        if previousGlobal != nil || nextGlobal != nil {
+            let response: ProxyGroupsResponse = try await client.request(.proxies)
+            for proxy in response.proxies.values {
+                guard proxy.type?.lowercased() == "selector", let selected = proxy.now,
+                      proxy.all.contains(selected), previousGlobal == nil || proxy.name != "GLOBAL"
+                else { continue }
+                selections[proxy.name == previousGlobal ? "GLOBAL" : proxy.name] = selected
+            }
+        }
+        try await client.requestNoResponse(.putConfigs(force: false, path: configPath, payload: nil))
+        if !selections.isEmpty {
+            let response: ProxyGroupsResponse = try await client.request(.proxies)
+            for (group, selected) in selections {
+                let name = group == "GLOBAL" ? nextGlobal ?? group : group
+                if response.proxies[name]?.type?.lowercased() == "selector",
+                   response.proxies[name]?.all.contains(selected) == true
+                {
+                    try await client.requestNoResponse(.switchProxy(name: name, target: selected))
+                }
+            }
+        }
         try await self.restoreTunAfterConfigReloadIfNeeded(expectedEnabled: expectedTunEnabled)
     }
 

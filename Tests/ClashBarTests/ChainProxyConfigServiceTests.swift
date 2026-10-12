@@ -6,119 +6,177 @@ import Yams
 struct ChainProxyConfigServiceTests {
     private let source = """
     mixed-port: 7890
-    mode: global
-    dns: {enable: true, nameserver: [1.1.1.1]}
+    mode: rule
     proxies:
-      - &front {name: 'Front #1', type: socks5, server: 127.0.0.1, port: 1080}
-      - {name: 'Exit, "JP"', type: ss, server: exit.example.com, port: 443, cipher: aes-128-gcm, password: 'secret: #value'}
-      - {name: ClashBar Front, type: socks5, server: other.example.com, port: 1080}
-      - {name: Existing chain, type: socks5, server: chained.example.com, port: 1080, dialer-proxy: 'Front #1'}
-      - {name: Direct node, type: direct}
+      - {name: Airport A, type: socks5, server: a.example.com, port: 1080}
+      - {name: Airport B, type: socks5, server: b.example.com, port: 1080}
+      - {name: Bypass, type: direct}
     proxy-groups:
-      - {name: ClashBar Chain, type: select, proxies: ['Front #1']}
-    rules: ['MATCH,ClashBar Chain']
+      - {name: Select, type: select, proxies: [Airport A, Airport B]}
+      - {name: Auto, type: url-test, proxies: [Airport A, Airport B], url: 'https://example.com', interval: 300}
+    rules:
+      - DOMAIN,lan.local,DIRECT
+      - DOMAIN,ads.example,REJECT
+      - DOMAIN,bypass.example,Bypass
+      - IP-CIDR,10.0.0.0/8,Select,no-resolve
+      - AND,((NETWORK,tcp),(DST-PORT,443)),Auto
+      - SUB-RULE,(NETWORK,udp),UDP
+      - MATCH,Select
+    sub-rules:
+      UDP: ["DST-PORT,53,DIRECT", "MATCH,Select"]
     """
 
-    @Test func composesCorrectDirectionAndPreservesRouting() throws {
-        try self.withFixture { root, configURL in
-            let settings = try self.settings()
-            let yaml = try ChainProxyConfigService.compose(sourceYAML: self.source, settings: settings)
-            let generated = try #require(try Yams.load(yaml: yaml) as? [String: Any])
-            let proxies = try #require(generated["proxies"] as? [[String: Any]])
-            let front = proxies[proxies.count - 2]
-            let landing = try #require(proxies.last)
-            #expect(front["server"] as? String == "127.0.0.1")
-            #expect(front["dialer-proxy"] == nil)
-            #expect(landing["server"] as? String == "exit.example.com")
-            #expect(landing["dialer-proxy"] as? String == front["name"] as? String)
-            #expect(landing["password"] as? String == "secret: #value")
-            #expect(generated["mode"] as? String == "global")
-            let groups = try #require(generated["proxy-groups"] as? [[String: Any]])
-            let chainName = try #require(groups.first?["name"] as? String)
-            #expect(generated["rules"] as? [String] == ["MATCH,\(chainName)"])
-            #expect(groups.last?["name"] as? String == "GLOBAL")
-            #expect(groups.last?["proxies"] as? [String] == [chainName])
-            #expect(groups.contains { $0["name"] as? String == "ClashBar Chain" })
-            #expect(generated["mixed-port"] as? Int == 7890)
-            #expect((generated["dns"] as? [String: Any])?["enable"] as? Bool == true)
-            #expect(try String(contentsOf: configURL, encoding: .utf8) == self.source)
+    @Test func allProxyRulesFollowTheMainAirportSelection() throws {
+        let settings = try self.settings()
+        let original = try self.parse(self.source)
+        let config = try self.parse(ChainProxyConfigService.compose(sourceYAML: self.source, settings: settings))
+        let proxies = try #require(config["proxies"] as? [[String: Any]])
+        let groups = try #require(config["proxy-groups"] as? [[String: Any]])
+        let originalProxies = try #require(original["proxies"] as? [[String: Any]])
+        #expect(NSArray(array: Array(proxies.prefix(3))).isEqual(to: originalProxies))
+        for group in try #require(original["proxy-groups"] as? [[String: Any]]) {
+            let copied = try #require(groups.first { $0["name"] as? String == group["name"] as? String })
+            #expect(NSDictionary(dictionary: group).isEqual(to: copied))
         }
+        let selectExit = try #require(proxies.first { $0["dialer-proxy"] as? String == "Select" })
+        #expect(!proxies.contains { $0["dialer-proxy"] as? String == "Auto" })
+        #expect(selectExit["server"] as? String == "exit.example.com")
+        #expect(selectExit["password"] as? String == "secret: #value")
+        #expect(proxies.filter { $0["dialer-proxy"] as? String == "Select" }.count == 1)
+        let select = try #require(selectExit["name"] as? String)
+        #expect(config["rules"] as? [String] == [
+            "DOMAIN,lan.local,DIRECT", "DOMAIN,ads.example,REJECT", "DOMAIN,bypass.example,Bypass",
+            "IP-CIDR,10.0.0.0/8,\(select),no-resolve",
+            "AND,((NETWORK,tcp),(DST-PORT,443)),\(select)", "SUB-RULE,(NETWORK,udp),UDP", "MATCH,\(select)",
+        ])
+        #expect((config["sub-rules"] as? [String: [String]])?["UDP"] == ["DST-PORT,53,DIRECT", "MATCH,\(select)"])
+        let globalFront = ChainProxyConfigService.globalFrontName(id: settings.id)
+        let globalExit = try #require(proxies.first { $0["dialer-proxy"] as? String == globalFront })
+        let global = try #require(groups.first { $0["name"] as? String == "GLOBAL" })
+        let globalExitName = try #require(globalExit["name"] as? String)
+        #expect(global["proxies"] as? [String] == [globalExitName])
+        let airportGlobal = try #require(groups.first { $0["name"] as? String == globalFront })
+        #expect(airportGlobal["proxies"] as? [String] == ["Select", "Auto", "Airport A", "Airport B", "Bypass", "DIRECT", "REJECT"])
+        #expect(config["mode"] as? String == "rule")
     }
 
-    @Test func rejectsSameNode() throws {
-        try self.withFixture { root, configURL in
-            let node = try self.settings().front
-            let invalid = ChainProxySettings(enabled: true, id: UUID(), front: node, landing: node)
-            #expect(throws: ChainProxyConfigError.self) {
-                try ChainProxyConfigService.compose(sourceYAML: self.source, settings: invalid)
-            }
-        }
+    @Test func mainGroupFollowsMenuOrderAndServiceGroupsAreNotFronts() throws {
+        let yaml = """
+        proxies: [{name: Node, type: socks5, server: localhost, port: 1080}]
+        proxy-groups:
+          - {name: Service, type: select, proxies: [DIRECT, Node]}
+          - {name: Main, type: select, proxies: [Node]}
+          - {name: GLOBAL, type: select, proxies: [Main, Service]}
+        rules: ["DOMAIN,service.example,Service", "MATCH,Main"]
+        """
+        let config = try self.parse(ChainProxyConfigService.compose(sourceYAML: yaml, settings: self.settings()))
+        let proxies = try #require(config["proxies"] as? [[String: Any]])
+        let exit = try #require(proxies.first { $0["dialer-proxy"] as? String == "Main" })
+        #expect(!proxies.contains { $0["dialer-proxy"] as? String == "Service" })
+        let name = try #require(exit["name"] as? String)
+        #expect(config["rules"] as? [String] == ["DOMAIN,service.example,\(name)", "MATCH,\(name)"])
     }
 
-    @Test func savedNodesSurviveUpdatesAndAirportSwitches() throws {
-        try self.withFixture { root, configURL in
+    @Test func providersAndIncludeAllCannotSelectInjectedExits() throws {
+        let yaml = """
+        proxies: [{name: Local, type: socks5, server: localhost, port: 1080}]
+        proxy-providers:
+          Subscription:
+            type: inline
+            payload: [{name: Provider Node, type: socks5, server: p.example.com, port: 1080}]
+        proxy-groups:
+          - {name: Airport, type: select, include-all: true, exclude-filter: 'blocked', use: [Subscription]}
+          - {name: GLOBAL, type: select, proxies: [Airport, Local], default-selected: Airport}
+        rules: ["MATCH,Airport"]
+        """
+        let original = try self.parse(yaml)
+        let settings = try self.settings()
+        let config = try self.parse(ChainProxyConfigService.compose(sourceYAML: yaml, settings: settings))
+        #expect(config["proxy-providers"] as? NSDictionary == original["proxy-providers"] as? NSDictionary)
+        let groups = try #require(config["proxy-groups"] as? [[String: Any]])
+        let group = try #require(groups.first { $0["name"] as? String == "Airport" })
+        #expect(group["include-all"] as? Bool == true)
+        #expect(group["use"] as? [String] == ["Subscription"])
+        let regex = try NSRegularExpression(pattern: try #require(group["exclude-filter"] as? String))
+        let proxies = try #require(config["proxies"] as? [[String: Any]])
+        for proxy in proxies where proxy["dialer-proxy"] != nil {
+            let name = try #require(proxy["name"] as? String)
+            #expect(regex.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)) != nil)
+        }
+        #expect(regex.firstMatch(in: "Local", range: NSRange(location: 0, length: 5)) == nil)
+        let global = try #require(groups.first { $0["name"] as? String == ChainProxyConfigService.globalFrontName(id: settings.id) })
+        #expect(global["default-selected"] as? String == "Airport")
+        #expect(global["proxies"] as? [String] == ["Airport", "Local"])
+    }
+
+    @Test func airportChangesKeepOnlyTheIndependentExitSnapshot() throws {
+        try self.withFixture { root, airport in
             let settings = try self.settings()
             try ChainProxyConfigService.writeSettings(settings, workingDirectory: root)
-            let saved = try #require(try ChainProxyConfigService.readSettings(workingDirectory: root))
-            #expect(saved == settings)
-            let updated = self.airportB
-            try updated.write(to: configURL, atomically: true, encoding: .utf8)
-            let runtimeA = try ChainProxyConfigService.prepareRuntimeConfig(
-                configURL: configURL, workingDirectory: root, settings: saved)
-            try self.expectSavedChain(at: runtimeA)
-            let airportBURL = configURL.deletingLastPathComponent().appendingPathComponent("airport-b.yaml")
-            try self.airportB.write(to: airportBURL, atomically: true, encoding: .utf8)
-            try FileManager.default.removeItem(at: configURL)
-            let runtimeB = try ChainProxyConfigService.prepareRuntimeConfig(
-                configURL: airportBURL, workingDirectory: root, settings: saved)
-            try self.expectSavedChain(at: runtimeB)
-            #expect(try String(contentsOf: airportBURL, encoding: .utf8) == self.airportB)
-            #expect(try ChainProxyConfigService.readSettings(workingDirectory: root) == settings)
-            #expect(runtimeB.deletingLastPathComponent().lastPathComponent == "runtime")
-            let settingsURL = ChainProxyConfigService.settingsURL(workingDirectory: root)
-            #expect(settingsURL.deletingLastPathComponent().lastPathComponent == "state")
-            let permissions = try FileManager.default.attributesOfItem(atPath: settingsURL.path)[.posixPermissions] as? Int
-            #expect(permissions == 0o600)
-            let runtimePermissions = try FileManager.default.attributesOfItem(atPath: runtimeB.path)[.posixPermissions] as? Int
-            #expect(runtimePermissions == 0o600)
+            let next = """
+            proxies: [{name: New Airport, type: socks5, server: new.example.com, port: 1080}]
+            proxy-groups: [{name: New Select, type: select, proxies: [New Airport]}]
+            rules: ["MATCH,New Select"]
+            """
+            for yaml in [self.source, next] {
+                try yaml.write(to: airport, atomically: true, encoding: .utf8)
+                let runtime = try ChainProxyConfigService.prepareRuntimeConfig(
+                    configURL: airport, workingDirectory: root, settings: settings)
+                let generated = try self.parse(String(contentsOf: runtime, encoding: .utf8))
+                let proxies = try #require(generated["proxies"] as? [[String: Any]])
+                #expect(proxies.filter { $0["server"] as? String == "exit.example.com" }.count >= 1)
+                #expect(proxies.contains { $0["dialer-proxy"] as? String == (yaml == next ? "New Select" : "Select") })
+                #expect(try String(contentsOf: airport, encoding: .utf8) == yaml)
+                #expect(try ChainProxyConfigService.readSettings(workingDirectory: root) == settings)
+                #expect(try FileManager.default.attributesOfItem(atPath: runtime.path)[.posixPermissions] as? Int == 0o600)
+            }
+            let saved = try self.parseJSON(Data(contentsOf: ChainProxyConfigService.settingsURL(workingDirectory: root)))
+            #expect(saved["front"] == nil)
         }
     }
 
-    @Test func disablingRestoresExactAirportConfigAndRetainsNodes() throws {
-        try self.withFixture { root, configURL in
+    @Test func disablingRestoresExactAirportConfigAndRetainsExit() throws {
+        try self.withFixture { root, airport in
             var settings = try self.settings()
             settings.enabled = false
             try ChainProxyConfigService.writeSettings(settings, workingDirectory: root)
-            let saved = try #require(try ChainProxyConfigService.readSettings(workingDirectory: root))
-            #expect(saved == settings)
-            #expect(try ChainProxyConfigService.compose(sourceYAML: self.source, settings: saved) == self.source)
-            #expect(try ChainProxyConfigService.prepareRuntimeConfig(
-                configURL: configURL, workingDirectory: root, settings: saved) == configURL)
-            #expect(try ChainProxyConfigService.prepareRuntimeConfig(
-                configURL: configURL, workingDirectory: root, settings: nil) == configURL)
+            #expect(try ChainProxyConfigService.compose(sourceYAML: self.source, settings: settings) == self.source)
+            #expect(try ChainProxyConfigService.prepareRuntimeConfig(configURL: airport, workingDirectory: root, settings: settings) == airport)
+            #expect(try ChainProxyConfigService.readSettings(workingDirectory: root) == settings)
+            #expect(!ChainProxySettings(id: UUID(), landing: settings.landing).enabled)
         }
     }
 
-    @Test func manualNodeLibraryPersistsEditsAndDeletesIndependently() throws {
-        try self.withFixture { root, configURL in
+    @Test(arguments: [true, false])
+    func legacySettingsRetainExitIDAndFullParametersForAddingAndEditing(addNode: Bool) throws {
+        try self.withFixture { root, _ in
             let settings = try self.settings()
-            let nodes = [settings.front, settings.landing]
-            #expect(try ChainProxyConfigService.readNodes(workingDirectory: root, settings: nil).isEmpty)
-            let disabled = ChainProxySettings(id: UUID(), front: settings.front, landing: settings.landing)
-            #expect(!disabled.enabled)
+            var legacy = try self.parseJSON(JSONEncoder().encode(settings))
+            legacy["front"] = ["id": "old-front", "name": settings.landing.name, "yaml": "unused legacy parameters"]
+            let url = ChainProxyConfigService.settingsURL(workingDirectory: root)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try JSONSerialization.data(withJSONObject: legacy).write(to: url)
+            let migrated = try #require(try ChainProxyConfigService.readSettings(workingDirectory: root))
+            #expect(migrated == settings)
+            var nodes = try ChainProxyConfigService.readNodes(workingDirectory: root, settings: migrated)
+            #expect(nodes == [settings.landing])
+            if addNode {
+                nodes.append(try ChainProxyConfigService.makeNode(name: "Added", yaml: "type: http\nserver: added.example.com\nport: 8080"))
+            } else {
+                nodes[0] = try ChainProxyConfigService.makeNode(
+                    id: nodes[0].id, name: nodes[0].name,
+                    yaml: nodes[0].yaml.replacingOccurrences(of: "exit.example.com", with: "edited.example.com"))
+                #expect(nodes[0].id == settings.landing.id)
+                let edited = try self.parse(nodes[0].yaml)
+                var expected = try self.parse(settings.landing.yaml)
+                expected["server"] = "edited.example.com"
+                #expect(NSDictionary(dictionary: expected).isEqual(to: edited))
+            }
             try ChainProxyConfigService.writeNodes(nodes, workingDirectory: root)
-            try FileManager.default.removeItem(at: configURL)
-            #expect(try ChainProxyConfigService.readNodes(workingDirectory: root, settings: nil) == nodes)
-            let edited = try ChainProxyConfigService.makeNode(
-                id: settings.front.id, name: "Edited Front", yaml: "type: http\nserver: new.example.com\nport: '8080'")
-            try ChainProxyConfigService.writeNodes([edited, settings.landing], workingDirectory: root)
-            let reloaded = try ChainProxyConfigService.readNodes(workingDirectory: root, settings: nil)
-            #expect(reloaded.first == edited)
-            #expect(reloaded.last == settings.landing)
+            #expect(try ChainProxyConfigService.readNodes(workingDirectory: root, settings: migrated) == nodes)
+            #expect(try ChainProxyConfigService.readSettings(workingDirectory: root) == settings)
             try ChainProxyConfigService.writeNodes([], workingDirectory: root)
-            #expect(try ChainProxyConfigService.readNodes(workingDirectory: root, settings: settings).isEmpty)
-            let path = root.appendingPathComponent("state/chain-proxy-nodes.json").path
-            #expect(try FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? Int == 0o600)
+            #expect(try ChainProxyConfigService.readNodes(workingDirectory: root, settings: migrated).isEmpty)
         }
     }
 
@@ -139,7 +197,7 @@ struct ChainProxyConfigServiceTests {
             #expect(throws: ChainProxyConfigError.self) {
                 try ChainProxyConfigService.makeNode(name: " ", yaml: "type: socks5\nserver: s\nport: 1080")
             }
-            let node = try self.settings().front
+            let node = try self.settings().landing
             try ChainProxyConfigService.writeNodes([node], workingDirectory: root)
             let duplicate = try ChainProxyConfigService.makeNode(name: node.name, yaml: node.yaml)
             #expect(throws: ChainProxyConfigError.self) {
@@ -154,177 +212,56 @@ struct ChainProxyConfigServiceTests {
         }
     }
 
-    @Test func existingSavedNodesRemainAvailableWithoutAnAirport() throws {
-        try self.withFixture { root, configURL in
-            let settings = try self.settings()
-            try ChainProxyConfigService.writeSettings(settings, workingDirectory: root)
-            try FileManager.default.removeItem(at: configURL)
-            let saved = try ChainProxyConfigService.readSettings(workingDirectory: root)
-            #expect(try ChainProxyConfigService.readNodes(workingDirectory: root, settings: saved)
-                == [settings.front, settings.landing])
-        }
-    }
-
-    @Test(arguments: [true, false])
-    func sameNameLegacyNodesSupportAddingAndEditing(addNode: Bool) throws {
-        try self.withFixture { root, configURL in
-            let front = ChainProxyNode(id: "legacy-front", name: "Shared Name", yaml: """
-            # Original front parameters
-            name: Shared Name
-            type: socks5
-            server: front.example.com
-            port: '1080'
-            username: front-user
-            password: 'secret: #front'
-            udp: true
-            """)
-            let landing = ChainProxyNode(id: "legacy-exit", name: "Shared Name", yaml: """
-            # Original nested parameters
-            name: Shared Name
-            type: ss
-            server: exit.example.com
-            port: 443
-            cipher: aes-128-gcm
-            password: 'secret: #exit'
-            plugin: v2ray-plugin
-            plugin-opts:
-              mode: websocket
-              host: cdn.example.com
-              tls: true
-              path: /ws
-            """)
-            let settings = ChainProxySettings(enabled: true, id: UUID(), front: front, landing: landing)
-            try ChainProxyConfigService.writeSettings(settings, workingDirectory: root)
-            try FileManager.default.removeItem(at: configURL)
-            let saved = try ChainProxyConfigService.readSettings(workingDirectory: root)
-            let migrated = try ChainProxyConfigService.readNodes(workingDirectory: root, settings: saved)
-            #expect(migrated.map(\.id) == [front.id, landing.id])
-            #expect(Set(migrated.map(\.name)).count == 2)
-            #expect(migrated.map(\.yaml) == [front.yaml, landing.yaml])
-            #expect(try ChainProxyConfigService.readNodes(workingDirectory: root, settings: saved) == migrated)
-
-            var updated = migrated
-            if addNode {
-                updated.append(try ChainProxyConfigService.makeNode(
-                    name: "Added Node", yaml: "type: http\nserver: added.example.com\nport: 8080"))
-            } else {
-                updated[1] = try ChainProxyConfigService.makeNode(
-                    id: migrated[1].id, name: migrated[1].name,
-                    yaml: landing.yaml.replacingOccurrences(of: "exit.example.com", with: "updated.example.com"))
-                var expected = try #require(try Yams.load(yaml: landing.yaml) as? [String: Any])
-                expected["name"] = migrated[1].name
-                expected["server"] = "updated.example.com"
-                let actual = try #require(try Yams.load(yaml: updated[1].yaml) as? [String: Any])
-                #expect(NSDictionary(dictionary: expected).isEqual(to: actual))
-            }
-            try ChainProxyConfigService.writeNodes(updated, workingDirectory: root)
-            let reloaded = try ChainProxyConfigService.readNodes(workingDirectory: root, settings: saved)
-            #expect(reloaded == updated)
-            #expect(Array(reloaded.prefix(2)).map(\.id) == [front.id, landing.id])
-            #expect(reloaded[0].yaml == front.yaml)
-            if addNode { #expect(reloaded[1].yaml == landing.yaml) }
-            #expect(try ChainProxyConfigService.readSettings(workingDirectory: root) == settings)
-        }
-    }
-
-    @Test func corruptSavedSettingsAreNotSilentlyIgnored() throws {
-        try self.withFixture { root, configURL in
-            try "proxies: [invalid".write(to: configURL, atomically: true, encoding: .utf8)
-            #expect(throws: ChainProxyConfigError.self) {
-                try ChainProxyConfigService.compose(sourceYAML: "proxies: [invalid", settings: self.settings())
-            }
+    @Test func rejectsInvalidExitAndCorruptSavedSettings() throws {
+        try self.withFixture { root, _ in
+            let invalid = ChainProxySettings(enabled: true, id: UUID(), landing: ChainProxyNode(
+                id: "bad", name: "Bad", yaml: "type: socks5\nserver: s\nport: 1080\ndialer-proxy: manual"))
+            #expect(throws: ChainProxyConfigError.self) { try ChainProxyConfigService.compose(sourceYAML: self.source, settings: invalid) }
             let url = ChainProxyConfigService.settingsURL(workingDirectory: root)
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try "invalid JSON".write(to: url, atomically: true, encoding: .utf8)
-            #expect(throws: ChainProxyConfigError.self) {
-                try ChainProxyConfigService.readSettings(workingDirectory: root)
-            }
-        }
-    }
-
-    @Test func preservesDirectRejectLogicalAndSubRules() throws {
-        try self.withFixture { root, configURL in
-            let settings = try self.settings()
-            let yaml = try ChainProxyConfigService.compose(sourceYAML: self.airportB, settings: settings)
-            let config = try #require(try Yams.load(yaml: yaml) as? [String: Any])
-            let groups = try #require(config["proxy-groups"] as? [[String: Any]])
-            let chain = try #require(groups.first?["name"] as? String)
-            #expect(config["rules"] as? [String] == [
-                "DOMAIN,lan.local,DIRECT",
-                "DOMAIN,ads.example,REJECT",
-                "IP-CIDR,192.168.0.0/16,DIRECT,no-resolve",
-                "IP-CIDR,10.0.0.0/8,\(chain),no-resolve",
-                "AND,((NETWORK,tcp),(DST-PORT,443)),\(chain)",
-                "SUB-RULE,(NETWORK,udp),UDP",
-                "MATCH,\(chain)",
-            ])
-            let subRules = try #require(config["sub-rules"] as? [String: [String]])
-            #expect(subRules["UDP"] == ["DST-PORT,53,DIRECT", "MATCH,\(chain)"])
-            #expect(config["mode"] as? String == "rule")
+            #expect(throws: ChainProxyConfigError.self) { try ChainProxyConfigService.readSettings(workingDirectory: root) }
         }
     }
 
     @Test(.enabled(if: ProcessInfo.processInfo.environment["CLASHBAR_TEST_MIHOMO"] != nil))
     func composedAirportsPassMihomoValidation() throws {
         let binary = try #require(ProcessInfo.processInfo.environment["CLASHBAR_TEST_MIHOMO"])
-        try self.withFixture { root, configURL in
-            let settings = try self.settings()
-            for source in [self.source, self.airportB] {
-                try source.write(to: configURL, atomically: true, encoding: .utf8)
-                let runtimeURL = try ChainProxyConfigService.prepareRuntimeConfig(
-                    configURL: configURL, workingDirectory: root, settings: settings)
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: binary)
-                process.arguments = ["-d", root.path, "-f", runtimeURL.path, "-t"]
-                let output = Pipe()
-                process.standardOutput = output
-                process.standardError = output
-                try process.run()
-                process.waitUntilExit()
-                let diagnostics = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-                #expect(process.terminationStatus == 0, "\(diagnostics)")
-            }
+        try self.withFixture { root, airport in
+            let runtime = try ChainProxyConfigService.prepareRuntimeConfig(configURL: airport, workingDirectory: root, settings: self.settings())
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: binary)
+            process.arguments = ["-d", root.path, "-f", runtime.path, "-t"]
+            let output = Pipe()
+            process.standardOutput = output
+            process.standardError = output
+            try process.run()
+            process.waitUntilExit()
+            let diagnostics = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            #expect(process.terminationStatus == 0, "\(diagnostics)")
         }
     }
 
-    private let airportB = """
-    mixed-port: 7891
-    mode: rule
-    proxies:
-      - {name: B Node, type: socks5, server: b.example.com, port: 1080}
-    proxy-groups:
-      - {name: B Select, type: select, proxies: [B Node]}
-    rules:
-      - DOMAIN,lan.local,DIRECT
-      - DOMAIN,ads.example,REJECT
-      - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve
-      - IP-CIDR,10.0.0.0/8,B Select,no-resolve
-      - AND,((NETWORK,tcp),(DST-PORT,443)),B Select
-      - SUB-RULE,(NETWORK,udp),UDP
-      - MATCH,B Select
-    sub-rules:
-      UDP: ["DST-PORT,53,DIRECT", "MATCH,B Select"]
-    """
-
     private func settings() throws -> ChainProxySettings {
-        let front = try ChainProxyConfigService.makeNode(
-            name: "Front #1", yaml: "type: socks5\nserver: 127.0.0.1\nport: 1080")
         let landing = try ChainProxyConfigService.makeNode(
-            name: "Exit, \"JP\"", yaml: "type: ss\nserver: exit.example.com\nport: 443\ncipher: aes-128-gcm\npassword: 'secret: #value'")
-        return ChainProxySettings(enabled: true, id: UUID(), front: front, landing: landing)
+            id: "independent-exit", name: "Exit", yaml: """
+            type: ss
+            server: exit.example.com
+            port: 443
+            cipher: aes-128-gcm
+            password: 'secret: #value'
+            plugin: v2ray-plugin
+            plugin-opts: {mode: websocket, host: cdn.example.com, tls: true, path: /ws}
+            """)
+        return ChainProxySettings(enabled: true, id: UUID(), landing: landing)
     }
 
-    private func expectSavedChain(at url: URL) throws {
-        let yaml = try String(contentsOf: url, encoding: .utf8)
-        let config = try #require(try Yams.load(yaml: yaml) as? [String: Any])
-        let proxies = try #require(config["proxies"] as? [[String: Any]])
-        let front = proxies[proxies.count - 2]
-        let landing = try #require(proxies.last)
-        #expect(front["server"] as? String == "127.0.0.1")
-        #expect(landing["server"] as? String == "exit.example.com")
-        #expect(landing["password"] as? String == "secret: #value")
-        #expect(landing["dialer-proxy"] as? String == front["name"] as? String)
-        #expect(config["mixed-port"] as? Int == 7891)
+    private func parse(_ yaml: String) throws -> [String: Any] {
+        try #require(try Yams.load(yaml: yaml) as? [String: Any])
+    }
+
+    private func parseJSON(_ data: Data) throws -> [String: Any] {
+        try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
     private func withFixture(_ body: (URL, URL) throws -> Void) throws {
@@ -332,8 +269,8 @@ struct ChainProxyConfigServiceTests {
         let configDirectory = root.appendingPathComponent("config")
         try FileManager.default.createDirectory(at: configDirectory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let configURL = configDirectory.appendingPathComponent("source.yaml")
-        try self.source.write(to: configURL, atomically: true, encoding: .utf8)
-        try body(root, configURL)
+        let airport = configDirectory.appendingPathComponent("airport.yaml")
+        try self.source.write(to: airport, atomically: true, encoding: .utf8)
+        try body(root, airport)
     }
 }

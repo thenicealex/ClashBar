@@ -11,7 +11,6 @@ struct ChainProxyNode: Identifiable, Codable, Equatable, Sendable {
 struct ChainProxySettings: Codable, Equatable, Sendable {
     var enabled: Bool = false
     let id: UUID
-    let front: ChainProxyNode
     let landing: ChainProxyNode
 }
 
@@ -49,10 +48,7 @@ enum ChainProxyConfigService {
         let url = self.nodesURL(workingDirectory: workingDirectory)
         guard FileManager.default.fileExists(atPath: url.path) else {
             // Keep nodes saved by earlier versions available without consulting the airport profile.
-            var names: Set<String> = []
-            return (settings.map { [$0.front, $0.landing] } ?? []).map { node in
-                ChainProxyNode(id: node.id, name: self.uniqueName(node.name, names: &names), yaml: node.yaml)
-            }
+            return settings.map { [$0.landing] } ?? []
         }
         let nodes = try JSONDecoder().decode([ChainProxyNode].self, from: Data(contentsOf: url))
         try self.validateNodes(nodes)
@@ -117,6 +113,10 @@ enum ChainProxyConfigService {
         return runtimeURL
     }
 
+    static func globalFrontName(id: UUID) -> String {
+        "ClashBar_Airport_GLOBAL_\(id.uuidString)"
+    }
+
     static func compose(sourceYAML: String, settings: ChainProxySettings) throws -> String {
         try self.validate(settings)
         guard settings.enabled else { return sourceYAML }
@@ -125,39 +125,70 @@ enum ChainProxyConfigService {
         var groups = config["proxy-groups"] as? [[String: Any]] ?? []
         var names = Set(proxies.compactMap { $0["name"] as? String })
         names.formUnion(groups.compactMap { $0["name"] as? String })
-        let suffix = settings.id.uuidString
-        let frontName = self.uniqueName("ClashBar Front \(suffix)", names: &names)
-        let landingName = self.uniqueName("ClashBar Landing \(suffix)", names: &names)
-        let groupName = self.uniqueName("ClashBar Chain \(suffix)", names: &names)
-        var frontProxy = try self.parse(settings.front.yaml)
-        var landingProxy = try self.parse(settings.landing.yaml)
-        frontProxy["name"] = frontName
-        landingProxy["name"] = landingName
-        landingProxy["dialer-proxy"] = frontName
-        proxies += [frontProxy, landingProxy]
-        groups.insert(["name": groupName, "type": "select", "proxies": [landingName]], at: 0)
-        // Keep global mode on the independent chain as well, including across config switches.
-        groups.removeAll { $0["name"] as? String == "GLOBAL" }
-        groups.append(["name": "GLOBAL", "type": "select", "proxies": [groupName]])
-        config["proxies"] = proxies
-        config["proxy-groups"] = groups
+        let prefix = "ClashBar Exit \(settings.id.uuidString) via "
+        let globalFront = self.globalFrontName(id: settings.id)
+        guard !names.contains(globalFront) else { throw ChainProxyConfigError.invalidConfig }
         let directTypes: Set<String> = ["direct", "reject", "reject-drop", "pass"]
         let bypassNames = Set(proxies.compactMap { proxy -> String? in
             guard directTypes.contains((proxy["type"] as? String ?? "").lowercased()) else { return nil }
             return proxy["name"] as? String
         }).union(["DIRECT", "REJECT", "REJECT-DROP", "PASS", "PASS-RULE"])
+        let landing = try self.parse(settings.landing.yaml)
+        let mainFront = self.mainFrontName(groups: groups, fallback: globalFront)
+        let mainExit = prefix + mainFront
+        let globalExit = prefix + "GLOBAL"
+        guard !names.contains(mainExit), !names.contains(globalExit) else {
+            throw ChainProxyConfigError.invalidConfig
+        }
+        var mainProxy = landing
+        mainProxy["name"] = mainExit
+        mainProxy["dialer-proxy"] = mainFront
+        var globalProxy = landing
+        globalProxy["name"] = globalExit
+        globalProxy["dialer-proxy"] = globalFront
+        // Keep airport groups and their selections intact. Exclude only injected exits from include-all.
+        for index in groups.indices where groups[index]["include-all"] as? Bool == true
+            || groups[index]["include-all-proxies"] as? Bool == true
+        {
+            let filter = groups[index]["exclude-filter"] as? String ?? ""
+            let exclude = "^" + NSRegularExpression.escapedPattern(for: prefix)
+            groups[index]["exclude-filter"] = filter.isEmpty ? exclude : "(\(filter))|\(exclude)"
+        }
+        var global = groups.first { $0["name"] as? String == "GLOBAL" } ?? [
+            "name": "GLOBAL", "type": "select",
+            "proxies": groups.compactMap { $0["name"] as? String }
+                + proxies.compactMap { $0["name"] as? String } + ["DIRECT", "REJECT"],
+        ]
+        global["name"] = globalFront
+        global["hidden"] = true
+        groups.removeAll { $0["name"] as? String == "GLOBAL" }
+        groups.append(global)
+        proxies += [mainProxy, globalProxy]
+        groups.append(["name": "GLOBAL", "type": "select", "proxies": [globalExit]])
         if let rules = config["rules"] as? [String] {
-            config["rules"] = rules.map { self.route($0, through: groupName, bypassNames: bypassNames) }
+            config["rules"] = rules.map { self.route($0, bypassNames: bypassNames, mainExit: mainExit, globalExit: globalExit) }
         }
         if let subRules = config["sub-rules"] as? [String: [String]] {
             config["sub-rules"] = subRules.mapValues { rules in
-                rules.map { self.route($0, through: groupName, bypassNames: bypassNames) }
+                rules.map { self.route($0, bypassNames: bypassNames, mainExit: mainExit, globalExit: globalExit) }
             }
         }
+        config["proxies"] = proxies
+        config["proxy-groups"] = groups
         return try Yams.dump(object: config, allowUnicode: true, sortKeys: true)
     }
 
-    private static func route(_ rule: String, through group: String, bypassNames: Set<String>) -> String {
+    static func mainFrontName(groups: [[String: Any]], fallback: String) -> String {
+        let groupOrder = groups.first { $0["name"] as? String == "GLOBAL" }?["proxies"] as? [String]
+            ?? groups.compactMap { $0["name"] as? String }
+        return groupOrder.first { name in
+            name != "GLOBAL" && groups.contains { $0["name"] as? String == name && $0["type"] as? String == "select" }
+        } ?? groupOrder.first { $0 != "GLOBAL" } ?? fallback
+    }
+
+    private static func route(
+        _ rule: String, bypassNames: Set<String>, mainExit: String, globalExit: String) -> String
+    {
         var parts = rule.components(separatedBy: ",")
         guard parts.count >= 2, parts[0].trimmingCharacters(in: .whitespaces).uppercased() != "SUB-RULE" else {
             return rule
@@ -167,19 +198,12 @@ enum ChainProxyConfigService {
             index -= 1
         }
         guard !bypassNames.contains(parts[index].trimmingCharacters(in: .whitespaces)) else { return rule }
-        parts[index] = group
+        parts[index] = parts[index].trimmingCharacters(in: .whitespaces) == "GLOBAL" ? globalExit : mainExit
         return parts.joined(separator: ",")
     }
 
     private static func validate(_ settings: ChainProxySettings) throws {
-        guard settings.front.id != settings.landing.id else { throw ChainProxyConfigError.invalidSelection }
-        for node in [settings.front, settings.landing] {
-            let parsed = try self.parse(node.yaml)
-            guard !(parsed["server"] as? String ?? "").isEmpty,
-                  !(parsed["type"] as? String ?? "").isEmpty,
-                  (parsed["dialer-proxy"] as? String ?? "").isEmpty
-            else { throw ChainProxyConfigError.invalidSelection }
-        }
+        _ = try self.makeNode(id: settings.landing.id, name: settings.landing.name, yaml: settings.landing.yaml)
     }
 
     private static func writePrivateData(_ data: Data, to url: URL) throws {
@@ -200,14 +224,4 @@ enum ChainProxyConfigService {
         }
     }
 
-    private static func uniqueName(_ base: String, names: inout Set<String>) -> String {
-        var candidate = base
-        var suffix = 2
-        while names.contains(candidate) {
-            candidate = "\(base) \(suffix)"
-            suffix += 1
-        }
-        names.insert(candidate)
-        return candidate
-    }
 }

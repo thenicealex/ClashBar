@@ -65,6 +65,7 @@ final class AppViewModel: ObservableObject {
     var isRuntimeConfigUpdating = false
     @Published var chainProxySettings: ChainProxySettings?
     @Published var chainProxySettingsLoadFailed = false
+    var chainProxyLogRedactor = ChainProxyLogRedactor()
     @Published var configDirectoryPath: String = "-"
     @Published var availableConfigFileNames: [String] = []
     @Published var remoteConfigMenuStates: [String: RemoteConfigMenuState] = [:]

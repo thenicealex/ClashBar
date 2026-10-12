@@ -68,6 +68,10 @@ enum AppResourceBundleLocator {
         let executableDirectoryURL = executableURL.deletingLastPathComponent()
         urls.append(executableDirectoryURL.appendingPathComponent(self.moduleBundleName, isDirectory: true))
 
+        let containingBundle = Bundle(for: ClashBarAppDelegate.self)
+        urls.append(containingBundle.bundleURL.deletingLastPathComponent()
+            .appendingPathComponent(self.moduleBundleName, isDirectory: true))
+
         return self.deduplicated(urls)
     }
 

@@ -394,26 +394,32 @@ extension AppViewModel {
         _ response: ProxyGroupsResponse,
         proxyProviders: [String: ProviderDetail] = [:])
     {
-        let providerLookup = proxyProviders.isEmpty ? self.proxyProvidersDetail : proxyProviders
-        let proxiesWithHealthcheckConfig = response.proxies.values.map { proxy in
-            let provider = providerLookup[proxy.name]
-            let resolvedTestURL = proxy.testUrl?.trimmedNonEmpty ?? provider?.testUrl?.trimmedNonEmpty
-            let resolvedTimeout = proxy.timeout.flatMap { $0 > 0 ? $0 : nil }
-                ?? provider?.timeout.flatMap { $0 > 0 ? $0 : nil }
-
-            return ProxyGroup(
-                name: proxy.name,
-                type: proxy.type,
-                now: proxy.now,
-                all: proxy.all,
-                testUrl: resolvedTestURL,
-                timeout: resolvedTimeout,
-                icon: proxy.icon,
-                hidden: proxy.hidden,
-                delayHistory: proxy.delayHistory)
+        let globalFront = self.isRemoteTarget ? nil : self.chainProxySettings.flatMap {
+            $0.enabled ? ChainProxyConfigService.globalFrontName(id: $0.id) : nil
         }
+        let airportGlobal = globalFront.flatMap { response.proxies[$0] }
+        let providerLookup = proxyProviders.isEmpty ? self.proxyProvidersDetail : proxyProviders
+        let proxiesWithHealthcheckConfig = response.proxies.values
+            .filter { airportGlobal == nil || $0.name != "GLOBAL" }
+            .map { proxy in
+                let provider = providerLookup[proxy.name]
+                let resolvedTestURL = proxy.testUrl?.trimmedNonEmpty ?? provider?.testUrl?.trimmedNonEmpty
+                let resolvedTimeout = proxy.timeout.flatMap { $0 > 0 ? $0 : nil }
+                    ?? provider?.timeout.flatMap { $0 > 0 ? $0 : nil }
 
-        let sortIndex = (response.proxies["GLOBAL"]?.all ?? []) + ["GLOBAL"]
+                return ProxyGroup(
+                    name: proxy.name == globalFront ? "GLOBAL" : proxy.name,
+                    type: proxy.type,
+                    now: proxy.now,
+                    all: proxy.all,
+                    testUrl: resolvedTestURL,
+                    timeout: resolvedTimeout,
+                    icon: proxy.icon,
+                    hidden: proxy.name == globalFront ? false : proxy.hidden,
+                    delayHistory: proxy.delayHistory)
+            }
+
+        let sortIndex = (airportGlobal?.all ?? response.proxies["GLOBAL"]?.all ?? []) + ["GLOBAL"]
         var sortIndexMap: [String: Int] = [:]
         for (index, name) in sortIndex.enumerated() where sortIndexMap[name] == nil {
             sortIndexMap[name] = index

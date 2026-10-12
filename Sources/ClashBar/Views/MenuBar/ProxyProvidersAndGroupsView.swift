@@ -695,7 +695,7 @@ private struct ProxyGroupPopoverNodeItem: View {
 }
 
 extension View {
-    fileprivate func delayBadge(samples: [Int], fallbackText: String, showsHistory: Bool) -> some View {
+    func delayBadge(samples: [Int], fallbackText: String, showsHistory: Bool) -> some View {
         let value = samples.last ?? 0
         return HStack(alignment: .center, spacing: 5) {
             LatencySignalBars(samples: samples, showsHistory: showsHistory)

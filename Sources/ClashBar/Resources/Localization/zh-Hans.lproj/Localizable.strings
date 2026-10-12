@@ -418,25 +418,23 @@
 "log.config.delete.failed" = "删除配置失败（%@）：%@";
 
 "ui.chain.title" = "链式代理";
-"ui.chain.front" = "前置节点";
 "ui.chain.landing" = "落地节点";
 "ui.chain.choose" = "请选择节点";
-"ui.chain.path" = "本机 → %@ → %@ → 目标网站（出口为落地节点）";
-"ui.chain.no_nodes" = "请先添加节点，再选择前置和落地节点。";
+"ui.chain.no_nodes" = "添加出口节点后，点击节点即可选择。";
 "ui.chain.close" = "关闭";
 "ui.chain.load_failed" = "配置读取失败，请检查 YAML 文件。";
-"ui.chain.invalid_selection" = "请选择两个不同的有效节点。";
+"ui.chain.invalid_selection" = "请先选择后置节点，再启用链式代理。";
 "ui.chain.source_changed" = "机场配置或运行状态在保存时发生变化，请重试。";
 "ui.chain.save_failed" = "链式代理保存或应用失败：%@";
 "ui.chain.enabled" = "启用链式代理";
 "ui.chain.active" = "已启用";
 "ui.chain.saved_load_failed" = "无法读取已保存的链式代理设置。请重新选择节点并开启；为避免绕过链路，内核不会自动忽略损坏的设置。";
 "ui.chain.rollback_failed" = "链式代理应用失败，恢复原运行配置也失败。已保存的设置未改变，请重新启动内核。";
-"ui.chain.nodes" = "节点";
+"ui.chain.nodes" = "后置节点";
 "ui.chain.node_add" = "添加节点";
 "ui.chain.node_edit" = "编辑节点";
 "ui.chain.node_name" = "节点名称";
-"ui.chain.node_config" = "单个节点配置（YAML）";
+"ui.chain.node_config" = "YAML";
 "ui.chain.node_invalid" = "请输入唯一的节点名称、协议、服务器和有效端口，不要设置 dialer-proxy。";
 "ui.chain.nodes_load_failed" = "节点库读取失败，已保存的链路仍保留。请检查节点库文件。";
 "ui.chain.nodes_save_failed" = "节点保存失败，请检查节点配置和名称是否重复。";
@@ -455,3 +453,45 @@
 "ui.chain.link_parse" = "解析链接";
 "ui.chain.link_invalid" = "无法导入此链接。请使用有效服务器和端口的单条 SOCKS5、HTTP/HTTPS 或 Shadowsocks 链接。插件、查询参数及其他协议请使用 YAML。";
 "ui.chain.form_unsupported" = "此协议请使用 YAML 编辑，完整参数会保留。";
+
+"log.chain.enable" = "启用";
+"log.chain.disable" = "停用";
+"log.chain.validate" = "校验配置";
+"log.chain.apply" = "应用运行配置";
+"log.chain.save" = "保存设置";
+"log.chain.rollback" = "回滚配置";
+"log.chain.load_nodes" = "读取节点库";
+"log.chain.save_nodes" = "保存节点库";
+"log.chain.started" = "链式代理 — %@：开始";
+"log.chain.succeeded" = "链式代理 — %@：成功";
+"log.chain.failed" = "链式代理 — %@失败：%@";
+
+// Chain proxy editor
+"ui.chain.reload_nodes" = "重新加载节点列表";
+"ui.chain.required" = "· 必填";
+"ui.chain.optional" = "· 可选";
+"ui.chain.name_placeholder" = "例如：新加坡代理";
+"ui.chain.name_detected" = "自动识别";
+"ui.chain.connection" = "连接";
+"ui.chain.authentication" = "身份验证";
+"ui.chain.security" = "安全";
+"ui.chain.tls_hint" = "仅在代理服务器支持 TLS 时启用";
+"ui.chain.reset" = "重置";
+"ui.chain.link_protocols" = "SOCKS5 · HTTP(S) · Shadowsocks";
+"ui.chain.clear" = "清空";
+"ui.chain.copy" = "复制 YAML";
+"ui.chain.use_example" = "示例";
+"ui.chain.valid" = "有效";
+"ui.chain.not_validated" = "尚未校验";
+"ui.chain.yaml_stats" = "%d 行 · %d 字符";
+"ui.chain.yaml_validate" = "校验 YAML";
+"ui.chain.node_preview" = "节点预览";
+"ui.chain.configured" = "已配置";
+"ui.chain.none" = "无";
+"ui.chain.disabled" = "未启用";
+"ui.chain.select_exit" = "添加后选为出口节点";
+"ui.chain.select_exit_hint" = "否则保留当前出口节点。";
+"ui.chain.latency_failed" = "测速失败，请检查节点连接和本地 Mihomo 内核。";
+
+"log.chain.latency" = "节点测速";
+"ui.chain.latency_unavailable" = "当前机场选中的节点不可用。";

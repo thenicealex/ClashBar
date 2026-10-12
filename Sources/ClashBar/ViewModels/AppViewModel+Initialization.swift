@@ -126,6 +126,12 @@ extension AppViewModel {
     }
 
     func coreErrorMessage(_ error: Error) -> String {
+        if let latencyError = error as? ChainProxyLatencyError {
+            switch latencyError {
+            case .unavailable: return self.tr("ui.chain.latency_unavailable")
+            case let .failed(reason): return self.chainProxyLogRedactor.redact(reason)
+            }
+        }
         if let chainError = error as? ChainProxyConfigError {
             switch chainError {
             case .invalidConfig: return self.tr("ui.chain.load_failed")
@@ -144,6 +150,6 @@ extension AppViewModel {
             }
         }
 
-        return error.localizedDescription
+        return self.chainProxyLogRedactor.redact(error.localizedDescription)
     }
 }
