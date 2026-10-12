@@ -79,7 +79,7 @@ extension AppViewModel {
             return
         }
 
-        if self.isCoreActionProcessing || self.isChainProxySaving {
+        if self.isCoreActionProcessing || self.isLocalRuntimeChanging {
             if selectedConfigChanged, !self.isTunSyncing {
                 self.pendingConfigChangeRestart = true
             }

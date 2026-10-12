@@ -19,7 +19,7 @@ extension AppViewModel {
 
     func startCore(trigger: StartTrigger = .manual) async {
         guard !self.isRemoteTarget else { return }
-        guard !isCoreActionProcessing, !self.isChainProxySaving else { return }
+        guard !isCoreActionProcessing, !self.isLocalRuntimeChanging else { return }
         if trigger == .manual {
             shouldResumeCoreAfterNetworkRecovery = false
         }
@@ -91,7 +91,7 @@ extension AppViewModel {
 
     func stopCore(trigger: StopTrigger = .manual) async {
         guard !self.isRemoteTarget else { return }
-        guard !isCoreActionProcessing, !self.isChainProxySaving else { return }
+        guard !isCoreActionProcessing, !self.isLocalRuntimeChanging else { return }
         if trigger == .manual {
             shouldResumeCoreAfterNetworkRecovery = false
         }
@@ -114,7 +114,7 @@ extension AppViewModel {
 
     func restartCore(trigger: ProviderRefreshTrigger = .restart) async {
         guard !self.isRemoteTarget else { return }
-        guard !isCoreActionProcessing, !self.isChainProxySaving else { return }
+        guard !isCoreActionProcessing, !self.isLocalRuntimeChanging else { return }
         coreActionState = .restarting
         defer { coreActionState = .idle }
         preserveLocalSettingsOnNextSync = true

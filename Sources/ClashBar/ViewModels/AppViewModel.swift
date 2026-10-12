@@ -61,7 +61,10 @@ final class AppViewModel: ObservableObject {
 
     @Published var mihomoBinaryPath: String = "-"
     @Published var selectedConfigName: String = "-"
-    @Published var isChainProxySaving = false
+    // Chain saves and local node switches hold this through gate waits, rollback and refresh.
+    // Other target/config/core changes wait or refuse while it is set.
+    @Published var isLocalRuntimeChanging = false
+    // Serializes runtime reloads, local transactions and latency snapshots across await points.
     var isRuntimeConfigUpdating = false
     @Published var chainProxySettings: ChainProxySettings?
     @Published var chainProxySettingsLoadFailed = false

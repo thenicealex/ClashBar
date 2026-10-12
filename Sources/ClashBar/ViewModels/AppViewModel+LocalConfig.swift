@@ -32,7 +32,7 @@ extension AppViewModel {
     }
 
     func selectConfig() async {
-        guard await self.waitForChainProxySave() else { return }
+        guard await self.waitForLocalRuntimeChange() else { return }
         let previousSelectedURL = configService.selectedConfig
         let previousSelectedPath = configService.selectedConfig?.path
         guard configService.chooseConfigDirectory() != nil else { return }
@@ -46,7 +46,7 @@ extension AppViewModel {
            previousCanonicalPath != nextCanonicalPath
         {
             let validationFailure = await self.configValidationFailureDetails(configPath: nextSelectedURL.path)
-            guard await self.waitForChainProxySave() else { return }
+            guard await self.waitForLocalRuntimeChange() else { return }
             let currentCanonicalPath = self.configService.selectedConfig?.standardizedFileURL
                 .resolvingSymlinksInPath().path
             guard currentCanonicalPath == nextCanonicalPath else { return }
@@ -69,7 +69,7 @@ extension AppViewModel {
     }
 
     func selectConfigFile(named fileName: String) async {
-        guard await self.waitForChainProxySave() else { return }
+        guard await self.waitForLocalRuntimeChange() else { return }
         let previousSelectedURL = configService.selectedConfig
         let previousSelectedPath = configService.selectedConfig?.path
         guard let matched = configService.availableConfigs.first(where: { $0.lastPathComponent == fileName }) else {
@@ -84,7 +84,7 @@ extension AppViewModel {
            previousCanonicalPath != targetCanonicalPath
         {
             let validationFailure = await self.configValidationFailureDetails(configPath: matched.path)
-            guard await self.waitForChainProxySave() else { return }
+            guard await self.waitForLocalRuntimeChange() else { return }
             let currentCanonicalPath = self.configService.selectedConfig?.standardizedFileURL
                 .resolvingSymlinksInPath().path
             guard currentCanonicalPath == previousCanonicalPath else { return }

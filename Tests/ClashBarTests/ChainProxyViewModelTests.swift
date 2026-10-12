@@ -52,7 +52,7 @@ struct ChainProxyViewModelTests {
             #expect(model.chainProxySettings == previous)
             #expect(try ChainProxyConfigService.readSettings(workingDirectory: root) == previous)
             #expect(model.configService.selectedConfig == config)
-            #expect(!model.isChainProxySaving)
+            #expect(!model.isLocalRuntimeChanging)
             #expect(!model.isRuntimeConfigUpdating)
         }
     }
@@ -82,7 +82,7 @@ struct ChainProxyViewModelTests {
         await pause.waitUntilPaused()
         #expect(model.chainProxySettings == previous)
         #expect(try ChainProxyConfigService.readSettings(workingDirectory: root) == previous)
-        #expect(model.isChainProxySaving)
+        #expect(model.isLocalRuntimeChanging)
         #expect(model.isRuntimeConfigUpdating)
         do {
             try await model.saveChainProxySettings(enabled: enabled, landing: landing)
@@ -106,7 +106,7 @@ struct ChainProxyViewModelTests {
         #expect(api.appliedPaths.count == (failSave ? 2 : 1))
         let finalPath = try #require(api.appliedPaths.last)
         #expect(finalPath == (expected.enabled ? try await model.runtimeConfigPath(for: config.path) : config.path))
-        #expect(!model.isChainProxySaving)
+        #expect(!model.isLocalRuntimeChanging)
         #expect(!model.isRuntimeConfigUpdating)
     }
 
@@ -174,7 +174,7 @@ struct ChainProxyViewModelTests {
         #expect(model.chainProxySettings == saved)
         #expect(model.configService.selectedConfig == config)
         #expect(!model.isRuntimeConfigUpdating)
-        #expect(!model.isChainProxySaving)
+        #expect(!model.isLocalRuntimeChanging)
     }
 
     @Test func airportSwitchWaitsForInFlightChainSave() async throws {
@@ -236,7 +236,7 @@ struct ChainProxyViewModelTests {
         #expect(saved.enabled)
         #expect(saved.landing == landing)
         #expect(model.chainProxySettings == saved)
-        #expect(!model.isChainProxySaving)
+        #expect(!model.isLocalRuntimeChanging)
         #expect(!model.isCoreActionProcessing)
     }
 
@@ -296,7 +296,7 @@ struct ChainProxyViewModelTests {
             let rolledBackPath = try #require(api.appliedPaths.last)
             #expect(try String(contentsOfFile: rolledBackPath, encoding: .utf8) == self.source)
         }
-        #expect(!model.isChainProxySaving)
+        #expect(!model.isLocalRuntimeChanging)
         #expect(!model.isRuntimeConfigUpdating)
     }
 
@@ -328,7 +328,7 @@ struct ChainProxyViewModelTests {
         #expect(api.appliedPaths.count == 1)
         #expect(settings.landing == landing)
         #expect(model.configService.selectedConfig == config)
-        #expect(!model.isChainProxySaving)
+        #expect(!model.isLocalRuntimeChanging)
         #expect(!model.isRuntimeConfigUpdating)
         try await model.saveChainProxySettings(enabled: false, landing: landing)
         #expect(api.selectedNode(in: group) == "Front")
@@ -394,7 +394,7 @@ struct ChainProxyViewModelTests {
         #expect(ChainAPIProtocol.state.appliedPaths.count == 2)
         #expect(model.chainProxySettings == nil)
         #expect(model.configService.selectedConfig == config)
-        #expect(!model.isChainProxySaving)
+        #expect(!model.isLocalRuntimeChanging)
         #expect(!model.isRuntimeConfigUpdating)
     }
 

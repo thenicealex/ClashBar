@@ -126,10 +126,10 @@ extension AppViewModel {
 
     func switchProxy(group: String, target: String) async {
         let expectedTarget = self.remoteMachineStore.activeTarget
-        guard await self.waitForChainProxySave(), self.remoteMachineStore.activeTarget == expectedTarget else { return }
+        guard await self.waitForLocalRuntimeChange(), self.remoteMachineStore.activeTarget == expectedTarget else { return }
         let local = !self.isRemoteTarget
-        if local { self.isChainProxySaving = true }
-        defer { if local { self.isChainProxySaving = false } }
+        if local { self.isLocalRuntimeChanging = true }
+        defer { if local { self.isLocalRuntimeChanging = false } }
         await runNoResponseAction(tr("log.action_name.switch_proxy", group, target)) {
             try await self.beginRuntimeConfigUpdate()
             defer { self.isRuntimeConfigUpdating = false }

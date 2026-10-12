@@ -2,21 +2,6 @@ import Foundation
 
 @MainActor
 extension AppViewModel {
-    func beginRuntimeConfigUpdate() async throws {
-        while self.isRuntimeConfigUpdating {
-            try await Task.sleep(for: .milliseconds(100))
-        }
-        try Task.checkCancellation()
-        self.isRuntimeConfigUpdating = true
-    }
-
-    func waitForChainProxySave() async -> Bool {
-        while self.isChainProxySaving {
-            do { try await Task.sleep(for: .milliseconds(100)) } catch { return false }
-        }
-        return !Task.isCancelled
-    }
-
     func loadChainProxySettings() {
         do {
             self.chainProxySettings = try ChainProxyConfigService.readSettings(
@@ -51,12 +36,12 @@ extension AppViewModel {
         self.chainProxyLogRedactor.include(yaml: landing.yaml)
         let operation = enabled ? "log.chain.enable" : "log.chain.disable"
         self.appendLog(level: "info", message: self.tr("log.chain.started", self.tr(operation)))
-        guard !self.isRemoteTarget, !self.isCoreActionProcessing, !self.isChainProxySaving else {
+        guard !self.isRemoteTarget, !self.isCoreActionProcessing, !self.isLocalRuntimeChanging else {
             self.logChainProxyFailure(operation: operation, error: ChainProxyConfigError.sourceChanged)
             throw ChainProxyConfigError.sourceChanged
         }
-        self.isChainProxySaving = true
-        defer { self.isChainProxySaving = false }
+        self.isLocalRuntimeChanging = true
+        defer { self.isLocalRuntimeChanging = false }
         do {
             try await self.beginRuntimeConfigUpdate()
         } catch {

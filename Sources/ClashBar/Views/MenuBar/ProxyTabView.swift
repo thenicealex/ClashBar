@@ -376,7 +376,7 @@ struct ProxyTabView: TranslatingView {
                             .environmentObject(self.appViewModel)
                     })
                 .buttonStyle(.plain)
-                .disabled(self.appViewModel.isCoreActionProcessing || self.appViewModel.isChainProxySaving)
+                .disabled(self.appViewModel.isCoreActionProcessing || self.appViewModel.isLocalRuntimeChanging)
             }
             if !self.proxyStore.sortedProxyProviderNames.isEmpty {
                 proxyProvidersSection
