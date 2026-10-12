@@ -29,14 +29,16 @@ struct ChainProxyConfigServiceTests {
     @Test func allProxyRulesFollowTheMainAirportSelection() throws {
         let settings = try self.settings()
         let original = try self.parse(self.source)
-        let config = try self.parse(ChainProxyConfigService.compose(sourceYAML: self.source, settings: settings))
+        let config = try self.parse(self.compose(sourceYAML: self.source, settings: settings))
         let proxies = try #require(config["proxies"] as? [[String: Any]])
         let groups = try #require(config["proxy-groups"] as? [[String: Any]])
         let originalProxies = try #require(original["proxies"] as? [[String: Any]])
         #expect(NSArray(array: Array(proxies.prefix(3))).isEqual(to: originalProxies))
         for group in try #require(original["proxy-groups"] as? [[String: Any]]) {
             let copied = try #require(groups.first { $0["name"] as? String == group["name"] as? String })
-            #expect(NSDictionary(dictionary: group).isEqual(to: copied))
+            var expected = group
+            if group["name"] as? String == "Select" { expected["default-selected"] = "Airport A" }
+            #expect(NSDictionary(dictionary: expected).isEqual(to: copied))
         }
         let selectExit = try #require(proxies.first { $0["dialer-proxy"] as? String == "Select" })
         #expect(!proxies.contains { $0["dialer-proxy"] as? String == "Auto" })
@@ -51,7 +53,8 @@ struct ChainProxyConfigServiceTests {
         ])
         #expect((config["sub-rules"] as? [String: [String]])?["UDP"] == ["DST-PORT,53,DIRECT", "MATCH,\(select)"])
         let globalFront = ChainProxyConfigService.globalFrontName(id: settings.id)
-        let globalExit = try #require(proxies.first { $0["dialer-proxy"] as? String == globalFront })
+        let globalExit = selectExit
+        #expect(globalExit["dialer-proxy"] as? String == "Select")
         let global = try #require(groups.first { $0["name"] as? String == "GLOBAL" })
         let globalExitName = try #require(globalExit["name"] as? String)
         #expect(global["proxies"] as? [String] == [globalExitName])
@@ -60,21 +63,66 @@ struct ChainProxyConfigServiceTests {
         #expect(config["mode"] as? String == "rule")
     }
 
-    @Test func mainGroupFollowsMenuOrderAndServiceGroupsAreNotFronts() throws {
+    @Test(arguments: ["MATCH", "FINAL"])
+    func recordedFrontIsIndependentOfMenuAndConfigOrder(defaultRule: String) throws {
         let yaml = """
         proxies: [{name: Node, type: socks5, server: localhost, port: 1080}]
         proxy-groups:
           - {name: Service, type: select, proxies: [DIRECT, Node]}
           - {name: Main, type: select, proxies: [Node]}
-          - {name: GLOBAL, type: select, proxies: [Main, Service]}
-        rules: ["DOMAIN,service.example,Service", "MATCH,Main"]
+          - {name: GLOBAL, type: select, proxies: [Service, Main]}
+        rules: ["DOMAIN,service.example,Service", "\(defaultRule),Main"]
         """
-        let config = try self.parse(ChainProxyConfigService.compose(sourceYAML: yaml, settings: self.settings()))
+        let config = try self.parse(self.compose(sourceYAML: yaml, settings: self.settings()))
         let proxies = try #require(config["proxies"] as? [[String: Any]])
         let exit = try #require(proxies.first { $0["dialer-proxy"] as? String == "Main" })
         #expect(!proxies.contains { $0["dialer-proxy"] as? String == "Service" })
         let name = try #require(exit["name"] as? String)
-        #expect(config["rules"] as? [String] == ["DOMAIN,service.example,\(name)", "MATCH,\(name)"])
+        #expect(config["rules"] as? [String] == ["DOMAIN,service.example,\(name)", "\(defaultRule),\(name)"])
+    }
+
+    @Test func recordedGroupOverridesMatchAndKeepsNestedSelectionsDynamic() throws {
+        let settings = try self.settings()
+        let front = ChainProxyFrontSelection(group: "Auto", node: "Airport B")
+        let config = try self.parse(ChainProxyConfigService.compose(sourceYAML: self.source, settings: settings, front: front))
+        let proxies = try #require(config["proxies"] as? [[String: Any]])
+        #expect(proxies.filter { $0["dialer-proxy"] as? String == "Auto" }.count == 1)
+        #expect(!proxies.contains { $0["dialer-proxy"] as? String == "Select" })
+        let groups = try #require(config["proxy-groups"] as? [[String: Any]])
+        #expect(groups.first { $0["name"] as? String == "Auto" }?["default-selected"] as? String == "Airport B")
+    }
+
+    @Test(arguments: ["", "filter: Other", "exclude-filter: Saved", "exclude-type: socks5"])
+    func savedFrontMustBelongToItsProviderAndPassGroupFilters(filter: String) throws {
+        let yaml = """
+        proxy-providers:
+          A: {type: inline, payload: [{name: Other, type: socks5, server: other.test, port: 1080}]}
+          B: {type: inline, payload: [{name: Saved, type: socks5, server: saved.test, port: 1080}]}
+        proxy-groups:
+          - name: Front
+            type: select
+            use: [A]
+            \(filter)
+        """
+        var source = try self.parse(yaml)
+        let front = ChainProxyFrontSelection(group: "Front", node: "Saved")
+        let root = FileManager.default.temporaryDirectory
+        #expect(!ChainProxyConfigService.frontIsAvailable(front, source: source, workingDirectory: root))
+        var groups = try #require(source["proxy-groups"] as? [[String: Any]])
+        groups[0]["use"] = ["B"]
+        source["proxy-groups"] = groups
+        #expect(ChainProxyConfigService.frontIsAvailable(front, source: source, workingDirectory: root) == filter.isEmpty)
+    }
+
+    @Test func noRecordedFrontDoesNotGuessFromMatchOrGroupOrder() throws {
+        #expect(throws: ChainProxyConfigError.missingAirportFront) {
+            try ChainProxyConfigService.compose(sourceYAML: self.source, settings: self.settings(), front: nil)
+        }
+        try self.withFixture { root, airport in
+            let runtime = try ChainProxyConfigService.prepareRuntimeConfig(
+                configURL: airport, workingDirectory: root, settings: self.settings(), front: nil)
+            #expect(runtime.url == airport)
+        }
     }
 
     @Test func providersAndIncludeAllCannotSelectInjectedExits() throws {
@@ -91,7 +139,7 @@ struct ChainProxyConfigServiceTests {
         """
         let original = try self.parse(yaml)
         let settings = try self.settings()
-        let config = try self.parse(ChainProxyConfigService.compose(sourceYAML: yaml, settings: settings))
+        let config = try self.parse(self.compose(sourceYAML: yaml, settings: settings))
         #expect(config["proxy-providers"] as? NSDictionary == original["proxy-providers"] as? NSDictionary)
         let groups = try #require(config["proxy-groups"] as? [[String: Any]])
         let group = try #require(groups.first { $0["name"] as? String == "Airport" })
@@ -115,20 +163,22 @@ struct ChainProxyConfigServiceTests {
             try ChainProxyConfigService.writeSettings(settings, workingDirectory: root)
             let next = """
             proxies: [{name: New Airport, type: socks5, server: new.example.com, port: 1080}]
-            proxy-groups: [{name: New Select, type: select, proxies: [New Airport]}]
+            proxy-groups:
+              - {name: Service, type: select, proxies: [DIRECT, New Airport]}
+              - {name: New Select, type: select, proxies: [New Airport]}
             rules: ["MATCH,New Select"]
             """
             for yaml in [self.source, next] {
                 try yaml.write(to: airport, atomically: true, encoding: .utf8)
                 let runtime = try ChainProxyConfigService.prepareRuntimeConfig(
-                    configURL: airport, workingDirectory: root, settings: settings)
-                let generated = try self.parse(String(contentsOf: runtime, encoding: .utf8))
+                    configURL: airport, workingDirectory: root, settings: settings, front: self.front(yaml))
+                let generated = try self.parse(String(contentsOf: runtime.url, encoding: .utf8))
                 let proxies = try #require(generated["proxies"] as? [[String: Any]])
                 #expect(proxies.filter { $0["server"] as? String == "exit.example.com" }.count >= 1)
                 #expect(proxies.contains { $0["dialer-proxy"] as? String == (yaml == next ? "New Select" : "Select") })
                 #expect(try String(contentsOf: airport, encoding: .utf8) == yaml)
                 #expect(try ChainProxyConfigService.readSettings(workingDirectory: root) == settings)
-                #expect(try FileManager.default.attributesOfItem(atPath: runtime.path)[.posixPermissions] as? Int == 0o600)
+                #expect(try FileManager.default.attributesOfItem(atPath: runtime.url.path)[.posixPermissions] as? Int == 0o600)
             }
             let saved = try self.parseJSON(Data(contentsOf: ChainProxyConfigService.settingsURL(workingDirectory: root)))
             #expect(saved["front"] == nil)
@@ -140,8 +190,8 @@ struct ChainProxyConfigServiceTests {
             var settings = try self.settings()
             settings.enabled = false
             try ChainProxyConfigService.writeSettings(settings, workingDirectory: root)
-            #expect(try ChainProxyConfigService.compose(sourceYAML: self.source, settings: settings) == self.source)
-            #expect(try ChainProxyConfigService.prepareRuntimeConfig(configURL: airport, workingDirectory: root, settings: settings) == airport)
+            #expect(try self.compose(sourceYAML: self.source, settings: settings) == self.source)
+            #expect(try ChainProxyConfigService.prepareRuntimeConfig(configURL: airport, workingDirectory: root, settings: settings, front: self.front(self.source)).url == airport)
             #expect(try ChainProxyConfigService.readSettings(workingDirectory: root) == settings)
             #expect(!ChainProxySettings(id: UUID(), landing: settings.landing).enabled)
         }
@@ -216,7 +266,7 @@ struct ChainProxyConfigServiceTests {
         try self.withFixture { root, _ in
             let invalid = ChainProxySettings(enabled: true, id: UUID(), landing: ChainProxyNode(
                 id: "bad", name: "Bad", yaml: "type: socks5\nserver: s\nport: 1080\ndialer-proxy: manual"))
-            #expect(throws: ChainProxyConfigError.self) { try ChainProxyConfigService.compose(sourceYAML: self.source, settings: invalid) }
+            #expect(throws: ChainProxyConfigError.self) { try self.compose(sourceYAML: self.source, settings: invalid) }
             let url = ChainProxyConfigService.settingsURL(workingDirectory: root)
             try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             try "invalid JSON".write(to: url, atomically: true, encoding: .utf8)
@@ -228,10 +278,10 @@ struct ChainProxyConfigServiceTests {
     func composedAirportsPassMihomoValidation() throws {
         let binary = try #require(ProcessInfo.processInfo.environment["CLASHBAR_TEST_MIHOMO"])
         try self.withFixture { root, airport in
-            let runtime = try ChainProxyConfigService.prepareRuntimeConfig(configURL: airport, workingDirectory: root, settings: self.settings())
+            let runtime = try ChainProxyConfigService.prepareRuntimeConfig(configURL: airport, workingDirectory: root, settings: self.settings(), front: self.front(self.source))
             let process = Process()
             process.executableURL = URL(fileURLWithPath: binary)
-            process.arguments = ["-d", root.path, "-f", runtime.path, "-t"]
+            process.arguments = ["-d", root.path, "-f", runtime.url.path, "-t"]
             let output = Pipe()
             process.standardOutput = output
             process.standardError = output
@@ -240,6 +290,20 @@ struct ChainProxyConfigServiceTests {
             let diagnostics = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
             #expect(process.terminationStatus == 0, "\(diagnostics)")
         }
+    }
+
+    private func front(_ yaml: String) throws -> ChainProxyFrontSelection {
+        let config = try self.parse(yaml)
+        let rule = (config["rules"] as? [String] ?? []).last ?? "MATCH,Select"
+        let group = rule.components(separatedBy: ",").last ?? "Select"
+        let groups = config["proxy-groups"] as? [[String: Any]] ?? []
+        let node = (groups.first { $0["name"] as? String == group }?["proxies"] as? [String])?.first
+            ?? (config["proxies"] as? [[String: Any]])?.first?["name"] as? String ?? "Node"
+        return ChainProxyFrontSelection(group: group, node: node)
+    }
+
+    private func compose(sourceYAML: String, settings: ChainProxySettings) throws -> String {
+        try ChainProxyConfigService.compose(sourceYAML: sourceYAML, settings: settings, front: self.front(sourceYAML))
     }
 
     private func settings() throws -> ChainProxySettings {

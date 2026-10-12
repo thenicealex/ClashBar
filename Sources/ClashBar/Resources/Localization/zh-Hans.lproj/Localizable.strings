@@ -495,3 +495,7 @@
 
 "log.chain.latency" = "节点测速";
 "ui.chain.latency_unavailable" = "当前机场选中的节点不可用。";
+
+"ui.chain.front_missing" = "请先在主界面选择机场节点或代理组。链式代理正在等待前置选择。";
+
+"ui.chain.front_load_failed" = "无法读取已保存的前置选择，请重新选择机场节点；后置配置仍保留。";

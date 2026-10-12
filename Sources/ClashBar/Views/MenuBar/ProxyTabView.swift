@@ -361,7 +361,7 @@ struct ProxyTabView: TranslatingView {
                             foreground: self.nativePurple)
                         {
                             HStack(spacing: T.space2) {
-                                if self.appViewModel.chainProxySettings?.enabled == true {
+                                if self.appViewModel.isChainProxyActive {
                                     Text(self.tr("ui.chain.active"))
                                         .font(.app(size: T.FontSize.caption))
                                         .foregroundStyle(self.nativePositive)

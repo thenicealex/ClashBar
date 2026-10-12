@@ -1,4 +1,3 @@
-import CryptoKit
 import Darwin
 import Foundation
 import Yams
@@ -41,45 +40,15 @@ enum ChainProxyLatencyService {
     }
 
     static func airportSnapshot(
-        sourceYAML: String, selections: [String: String], workingDirectory: URL, global: Bool = false) throws -> String
+        sourceYAML: String, selections: [String: String], front: ChainProxyFrontSelection, workingDirectory: URL) throws -> String
     {
         guard let source = try? Yams.load(yaml: sourceYAML) as? [String: Any] else {
             throw ChainProxyLatencyError.unavailable
         }
-        var proxies = source["proxies"] as? [[String: Any]] ?? []
-        for provider in (source["proxy-providers"] as? [String: [String: Any]] ?? [:]).values {
-            var nodes = provider["payload"] as? [[String: Any]] ?? []
-            let path = (provider["path"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? (provider["url"] as? String).map {
-                "proxies/" + Insecure.MD5.hash(data: Data($0.utf8)).map { String(format: "%02x", $0) }.joined()
-            }
-            if let path {
-                let url = path.hasPrefix("/") ? URL(fileURLWithPath: path) : workingDirectory.appendingPathComponent(path)
-                if let yaml = try? String(contentsOf: url, encoding: .utf8),
-                   let cache = try? Yams.load(yaml: yaml) as? [String: Any],
-                   let cached = cache["proxies"] as? [[String: Any]] { nodes = cached }
-            }
-            let overrides = provider["override"] as? [String: Any] ?? [:]
-            // Expression overrides require the core's evaluator; never test an approximation.
-            if overrides["override-expr"] != nil { continue }
-            for var node in nodes {
-                guard var name = node["name"] as? String else { continue }
-                for replacement in overrides["proxy-name"] as? [[String: String]] ?? [] {
-                    if let pattern = replacement["pattern"], let target = replacement["target"],
-                       let regex = try? NSRegularExpression(pattern: pattern)
-                    {
-                        name = regex.stringByReplacingMatches(
-                            in: name, range: NSRange(name.startIndex..., in: name), withTemplate: target)
-                    }
-                }
-                node.merge(overrides.filter { !["additional-prefix", "additional-suffix", "proxy-name"].contains($0.key) }) {
-                    _, override in override
-                }
-                node["name"] = (overrides["additional-prefix"] as? String ?? "") + name
-                    + (overrides["additional-suffix"] as? String ?? "")
-                if node["dialer-proxy"] == nil { node["dialer-proxy"] = provider["dialer-proxy"] }
-                proxies.append(node)
-            }
+        guard ChainProxyConfigService.frontIsAvailable(front, source: source, workingDirectory: workingDirectory) else {
+            throw ChainProxyLatencyError.unavailable
         }
+        let proxies = ChainProxyConfigService.airportProxies(source: source, workingDirectory: workingDirectory)
         var included: [[String: Any]] = []
         var visited: Set<String> = []
         func include(_ name: String) throws -> String {
@@ -95,9 +64,7 @@ enum ChainProxyLatencyService {
             included.append(proxy)
             return name
         }
-        let name = global ? "GLOBAL" : ChainProxyConfigService.mainFrontName(
-            groups: source["proxy-groups"] as? [[String: Any]] ?? [], fallback: "GLOBAL")
-        let front = try include(name)
+        let front = try include(front.group)
         return try Yams.dump(object: [
             "proxies": included,
             "proxy-groups": [["name": "chain-front", "type": "select", "proxies": [front]]],

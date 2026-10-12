@@ -126,20 +126,24 @@ extension AppViewModel {
 
     func switchProxy(group: String, target: String) async {
         let expectedTarget = self.remoteMachineStore.activeTarget
-        guard await self.waitForLocalRuntimeChange(), self.remoteMachineStore.activeTarget == expectedTarget else { return }
+        let expectedConfig = self.configService.selectedConfig
+        guard !self.isCoreActionProcessing, await self.waitForLocalRuntimeChange(),
+              self.remoteMachineStore.activeTarget == expectedTarget, !self.isCoreActionProcessing else { return }
         let local = !self.isRemoteTarget
         if local { self.isLocalRuntimeChanging = true }
         defer { if local { self.isLocalRuntimeChanging = false } }
         await runNoResponseAction(tr("log.action_name.switch_proxy", group, target)) {
             try await self.beginRuntimeConfigUpdate()
             defer { self.isRuntimeConfigUpdating = false }
-            guard self.remoteMachineStore.activeTarget == expectedTarget else {
+            guard !self.isCoreActionProcessing, self.remoteMachineStore.activeTarget == expectedTarget,
+                  !local || self.configService.selectedConfig == expectedConfig else {
                 throw ChainProxyConfigError.sourceChanged
             }
-            let name = local && group == "GLOBAL" ? self.chainProxySettings.flatMap {
-                $0.enabled ? ChainProxyConfigService.globalFrontName(id: $0.id) : nil
-            } ?? group : group
-            try await self.clientOrThrow().requestNoResponse(.switchProxy(name: name, target: target))
+            if local, let expectedConfig {
+                try await self.selectChainProxyFront(group: group, node: target, configURL: expectedConfig)
+            } else {
+                try await self.clientOrThrow().requestNoResponse(.switchProxy(name: group, target: target))
+            }
             await self.refreshProxyGroups()
         }
     }

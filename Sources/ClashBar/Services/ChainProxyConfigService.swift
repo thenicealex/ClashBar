@@ -8,14 +8,25 @@ struct ChainProxyNode: Identifiable, Codable, Equatable, Sendable {
     let yaml: String
 }
 
+struct ChainProxyFrontSelection: Codable, Equatable, Sendable {
+    let group: String
+    let node: String
+}
+
 struct ChainProxySettings: Codable, Equatable, Sendable {
     var enabled: Bool = false
     let id: UUID
     let landing: ChainProxyNode
 }
 
+struct ChainProxyRuntimeConfig: Sendable {
+    let url: URL
+    let isChained: Bool
+}
+
 enum ChainProxyConfigError: Error {
     case invalidConfig
+    case missingAirportFront
     case invalidSelection
     case sourceChanged
     case invalidSavedSettings
@@ -97,12 +108,113 @@ enum ChainProxyConfigService {
         try self.writePrivateData(data, to: url)
     }
 
+    static func airportProxies(source: [String: Any], workingDirectory: URL) -> [[String: Any]] {
+        var proxies = source["proxies"] as? [[String: Any]] ?? []
+        for provider in (source["proxy-providers"] as? [String: [String: Any]] ?? [:]).values {
+            var nodes = provider["payload"] as? [[String: Any]] ?? []
+            let path = (provider["path"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? (provider["url"] as? String).map {
+                "proxies/" + Insecure.MD5.hash(data: Data($0.utf8)).map { String(format: "%02x", $0) }.joined()
+            }
+            if let path {
+                let url = path.hasPrefix("/") ? URL(fileURLWithPath: path) : workingDirectory.appendingPathComponent(path)
+                if let yaml = try? String(contentsOf: url, encoding: .utf8),
+                   let cache = try? Yams.load(yaml: yaml) as? [String: Any],
+                   let cached = cache["proxies"] as? [[String: Any]] { nodes = cached }
+            }
+            let overrides = provider["override"] as? [String: Any] ?? [:]
+            // Expression overrides require the core's evaluator; never test an approximation.
+            if overrides["override-expr"] != nil { continue }
+            for var node in nodes {
+                guard var name = node["name"] as? String,
+                      self.proxyPassesFilters(node, options: provider, include: true) else { continue }
+                for replacement in overrides["proxy-name"] as? [[String: String]] ?? [] {
+                    if let pattern = replacement["pattern"], let target = replacement["target"],
+                       let regex = try? NSRegularExpression(pattern: pattern)
+                    {
+                        name = regex.stringByReplacingMatches(
+                            in: name, range: NSRange(name.startIndex..., in: name), withTemplate: target)
+                    }
+                }
+                node.merge(overrides.filter { !["additional-prefix", "additional-suffix", "proxy-name"].contains($0.key) }) {
+                    _, override in override
+                }
+                node["name"] = (overrides["additional-prefix"] as? String ?? "") + name
+                    + (overrides["additional-suffix"] as? String ?? "")
+                if node["dialer-proxy"] == nil { node["dialer-proxy"] = provider["dialer-proxy"] }
+                proxies.append(node)
+            }
+        }
+        return proxies
+    }
+
+    private static func proxyPassesFilters(_ proxy: [String: Any], options: [String: Any], include: Bool) -> Bool {
+        guard let name = proxy["name"] as? String else { return false }
+        func matches(_ pattern: String) -> Bool? {
+            var matched = false
+            for part in pattern.components(separatedBy: "`") {
+                guard let regex = try? NSRegularExpression(pattern: part) else { return nil }
+                matched = matched || regex.firstMatch(in: name, range: NSRange(name.startIndex..., in: name)) != nil
+            }
+            return matched
+        }
+        if include, let filter = options["filter"] as? String, !filter.isEmpty, matches(filter) != true { return false }
+        if let exclude = options["exclude-filter"] as? String, !exclude.isEmpty, matches(exclude) != false { return false }
+        let types = (options["exclude-type"] as? String ?? "").lowercased().components(separatedBy: "|")
+        return !types.contains((proxy["type"] as? String ?? "").lowercased())
+    }
+
+    static func frontIsAvailable(_ front: ChainProxyFrontSelection, source: [String: Any], workingDirectory: URL) -> Bool {
+        let groups = source["proxy-groups"] as? [[String: Any]] ?? []
+        let staticProxies = source["proxies"] as? [[String: Any]] ?? []
+        let providers = source["proxy-providers"] as? [String: [String: Any]] ?? [:]
+        let group = groups.first { $0["name"] as? String == front.group }
+        guard let group else {
+            return front.group == "GLOBAL" && (groups + staticProxies).contains { $0["name"] as? String == front.node }
+        }
+        var candidates = (groups + staticProxies).filter {
+            (group["proxies"] as? [String] ?? []).contains($0["name"] as? String ?? "")
+        }
+        let all = group["include-all"] as? Bool == true
+        if all || group["include-all-proxies"] as? Bool == true {
+            candidates += staticProxies.filter { self.proxyPassesFilters($0, options: group, include: true) }
+        }
+        let used = all || group["include-all-providers"] as? Bool == true
+            ? Array(providers.keys) : group["use"] as? [String] ?? []
+        let providerSource: [String: Any] = ["proxy-providers": providers.filter { used.contains($0.key) }]
+        candidates += self.airportProxies(source: providerSource, workingDirectory: workingDirectory)
+            .filter { self.proxyPassesFilters($0, options: group, include: true) }
+        return candidates.contains {
+            $0["name"] as? String == front.node
+                && !["direct", "reject", "reject-drop", "pass"].contains(($0["type"] as? String ?? "").lowercased())
+                && self.proxyPassesFilters($0, options: group, include: false)
+        }
+    }
+
+    static func frontKey(for configURL: URL) -> String {
+        configURL.standardizedFileURL.resolvingSymlinksInPath().path
+    }
+
+    static func readFrontSelections(workingDirectory: URL) throws -> [String: ChainProxyFrontSelection] {
+        let url = workingDirectory.appendingPathComponent("state/chain-proxy-fronts.json")
+        guard FileManager.default.fileExists(atPath: url.path) else { return [:] }
+        return try JSONDecoder().decode([String: ChainProxyFrontSelection].self, from: Data(contentsOf: url))
+    }
+
+    static func writeFrontSelections(_ selections: [String: ChainProxyFrontSelection], workingDirectory: URL) throws {
+        let url = workingDirectory.appendingPathComponent("state/chain-proxy-fronts.json")
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try self.writePrivateData(JSONEncoder().encode(selections), to: url)
+    }
+
     static func prepareRuntimeConfig(
-        configURL: URL, workingDirectory: URL, settings: ChainProxySettings?) throws -> URL
+        configURL: URL, workingDirectory: URL, settings: ChainProxySettings?, front: ChainProxyFrontSelection?) throws -> ChainProxyRuntimeConfig
     {
-        guard let settings, settings.enabled else { return configURL }
+        guard let settings, settings.enabled, let front else { return ChainProxyRuntimeConfig(url: configURL, isChained: false) }
         let source = try String(contentsOf: configURL, encoding: .utf8)
-        let yaml = try self.compose(sourceYAML: source, settings: settings)
+        let config = try self.parse(source)
+        guard self.frontIsAvailable(front, source: config, workingDirectory: workingDirectory)
+        else { return ChainProxyRuntimeConfig(url: configURL, isChained: false) }
+        let yaml = try self.compose(sourceYAML: source, settings: settings, front: front)
         let directory = workingDirectory.appendingPathComponent("runtime", isDirectory: true)
         try FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -110,14 +222,14 @@ enum ChainProxyConfigService {
         let hash = SHA256.hash(data: Data(yaml.utf8)).map { String(format: "%02x", $0) }.joined()
         let runtimeURL = directory.appendingPathComponent("chain-\(hash).yaml")
         try self.writePrivateData(Data(yaml.utf8), to: runtimeURL)
-        return runtimeURL
+        return ChainProxyRuntimeConfig(url: runtimeURL, isChained: true)
     }
 
     static func globalFrontName(id: UUID) -> String {
         "ClashBar_Airport_GLOBAL_\(id.uuidString)"
     }
 
-    static func compose(sourceYAML: String, settings: ChainProxySettings) throws -> String {
+    static func compose(sourceYAML: String, settings: ChainProxySettings, front: ChainProxyFrontSelection?) throws -> String {
         try self.validate(settings)
         guard settings.enabled else { return sourceYAML }
         var config = try self.parse(sourceYAML)
@@ -134,18 +246,20 @@ enum ChainProxyConfigService {
             return proxy["name"] as? String
         }).union(["DIRECT", "REJECT", "REJECT-DROP", "PASS", "PASS-RULE"])
         let landing = try self.parse(settings.landing.yaml)
-        let mainFront = self.mainFrontName(groups: groups, fallback: globalFront)
-        let mainExit = prefix + mainFront
-        let globalExit = prefix + "GLOBAL"
-        guard !names.contains(mainExit), !names.contains(globalExit) else {
+        guard let front, groups.contains(where: { $0["name"] as? String == front.group }) || front.group == "GLOBAL" else {
+            throw ChainProxyConfigError.missingAirportFront
+        }
+        let frontGroup = front.group == "GLOBAL" ? globalFront : front.group
+        for index in groups.indices where groups[index]["name"] as? String == front.group {
+            groups[index]["default-selected"] = front.node
+        }
+        let exitName = prefix + frontGroup
+        guard !names.contains(exitName) else {
             throw ChainProxyConfigError.invalidConfig
         }
-        var mainProxy = landing
-        mainProxy["name"] = mainExit
-        mainProxy["dialer-proxy"] = mainFront
-        var globalProxy = landing
-        globalProxy["name"] = globalExit
-        globalProxy["dialer-proxy"] = globalFront
+        var exitProxy = landing
+        exitProxy["name"] = exitName
+        exitProxy["dialer-proxy"] = frontGroup
         // Keep airport groups and their selections intact. Exclude only injected exits from include-all.
         for index in groups.indices where groups[index]["include-all"] as? Bool == true
             || groups[index]["include-all-proxies"] as? Bool == true
@@ -159,18 +273,19 @@ enum ChainProxyConfigService {
             "proxies": groups.compactMap { $0["name"] as? String }
                 + proxies.compactMap { $0["name"] as? String } + ["DIRECT", "REJECT"],
         ]
+        if front.group == "GLOBAL" { global["default-selected"] = front.node }
         global["name"] = globalFront
         global["hidden"] = true
         groups.removeAll { $0["name"] as? String == "GLOBAL" }
         groups.append(global)
-        proxies += [mainProxy, globalProxy]
-        groups.append(["name": "GLOBAL", "type": "select", "proxies": [globalExit]])
+        proxies.append(exitProxy)
+        groups.append(["name": "GLOBAL", "type": "select", "proxies": [exitName]])
         if let rules = config["rules"] as? [String] {
-            config["rules"] = rules.map { self.route($0, bypassNames: bypassNames, mainExit: mainExit, globalExit: globalExit) }
+            config["rules"] = rules.map { self.route($0, bypassNames: bypassNames, exitName: exitName) }
         }
         if let subRules = config["sub-rules"] as? [String: [String]] {
             config["sub-rules"] = subRules.mapValues { rules in
-                rules.map { self.route($0, bypassNames: bypassNames, mainExit: mainExit, globalExit: globalExit) }
+                rules.map { self.route($0, bypassNames: bypassNames, exitName: exitName) }
             }
         }
         config["proxies"] = proxies
@@ -178,16 +293,8 @@ enum ChainProxyConfigService {
         return try Yams.dump(object: config, allowUnicode: true, sortKeys: true)
     }
 
-    static func mainFrontName(groups: [[String: Any]], fallback: String) -> String {
-        let groupOrder = groups.first { $0["name"] as? String == "GLOBAL" }?["proxies"] as? [String]
-            ?? groups.compactMap { $0["name"] as? String }
-        return groupOrder.first { name in
-            name != "GLOBAL" && groups.contains { $0["name"] as? String == name && $0["type"] as? String == "select" }
-        } ?? groupOrder.first { $0 != "GLOBAL" } ?? fallback
-    }
-
     private static func route(
-        _ rule: String, bypassNames: Set<String>, mainExit: String, globalExit: String) -> String
+        _ rule: String, bypassNames: Set<String>, exitName: String) -> String
     {
         var parts = rule.components(separatedBy: ",")
         guard parts.count >= 2, parts[0].trimmingCharacters(in: .whitespaces).uppercased() != "SUB-RULE" else {
@@ -198,7 +305,7 @@ enum ChainProxyConfigService {
             index -= 1
         }
         guard !bypassNames.contains(parts[index].trimmingCharacters(in: .whitespaces)) else { return rule }
-        parts[index] = parts[index].trimmingCharacters(in: .whitespaces) == "GLOBAL" ? globalExit : mainExit
+        parts[index] = exitName
         return parts.joined(separator: ",")
     }
 

@@ -20,6 +20,12 @@ extension AppViewModel {
         return !Task.isCancelled
     }
 
+    func airportGroupName(_ group: String, proxies: [String: ProxyGroup], settings: ChainProxySettings?) -> String {
+        guard group == "GLOBAL", let settings else { return group }
+        let hidden = ChainProxyConfigService.globalFrontName(id: settings.id)
+        return proxies[hidden] == nil ? group : hidden
+    }
+
     func reloadLocalRuntimeConfig(
         configPath: String, from previous: ChainProxySettings?, to settings: ChainProxySettings?) async throws
     {
@@ -30,23 +36,21 @@ extension AppViewModel {
         let previousGlobal = previous.flatMap {
             $0.enabled ? ChainProxyConfigService.globalFrontName(id: $0.id) : nil
         }
-        let nextGlobal = settings.flatMap {
-            $0.enabled ? ChainProxyConfigService.globalFrontName(id: $0.id) : nil
-        }
-        if previousGlobal != nil || nextGlobal != nil {
+        if previousGlobal != nil || settings?.enabled == true {
             let response: ProxyGroupsResponse = try await client.request(.proxies)
+            let actualPreviousGlobal = previousGlobal.flatMap { response.proxies[$0] == nil ? nil : $0 }
             for proxy in response.proxies.values {
                 guard proxy.type?.lowercased() == "selector", let selected = proxy.now,
-                      proxy.all.contains(selected), previousGlobal == nil || proxy.name != "GLOBAL"
+                      proxy.all.contains(selected), actualPreviousGlobal == nil || proxy.name != "GLOBAL"
                 else { continue }
-                selections[proxy.name == previousGlobal ? "GLOBAL" : proxy.name] = selected
+                selections[proxy.name == actualPreviousGlobal ? "GLOBAL" : proxy.name] = selected
             }
         }
         try await client.requestNoResponse(.putConfigs(force: false, path: configPath, payload: nil))
         if !selections.isEmpty {
             let response: ProxyGroupsResponse = try await client.request(.proxies)
             for (group, selected) in selections {
-                let name = group == "GLOBAL" ? nextGlobal ?? group : group
+                let name = self.airportGroupName(group, proxies: response.proxies, settings: settings)
                 if response.proxies[name]?.type?.lowercased() == "selector",
                    response.proxies[name]?.all.contains(selected) == true
                 {

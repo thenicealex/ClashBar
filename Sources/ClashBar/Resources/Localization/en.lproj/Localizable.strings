@@ -495,3 +495,7 @@
 
 "log.chain.latency" = "Latency test";
 "ui.chain.latency_unavailable" = "The currently selected airport node is unavailable.";
+
+"ui.chain.front_missing" = "Select an airport node or group in the main view first. Chain Proxy is waiting for a front selection.";
+
+"ui.chain.front_load_failed" = "Cannot read saved front selections. Select an airport node again; exit settings are preserved.";

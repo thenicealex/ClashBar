@@ -17,6 +17,13 @@ extension AppViewModel {
             self.chainProxySettingsLoadFailed = true
             self.appendLog(level: "error", message: self.tr("ui.chain.saved_load_failed"))
         }
+        do {
+            self.chainProxyFrontSelections = try ChainProxyConfigService.readFrontSelections(
+                workingDirectory: self.workingDirectoryManager.rootDirectoryURL)
+        } catch {
+            self.chainProxyFrontSelections = [:]
+            self.appendLog(level: "error", message: self.tr("ui.chain.front_load_failed"))
+        }
     }
 
     func runtimeConfigPath(for configPath: String) async throws -> String {
@@ -26,10 +33,20 @@ extension AppViewModel {
 
     func runtimeConfigPath(for configPath: String, using settings: ChainProxySettings?) async throws -> String {
         let root = self.workingDirectoryManager.rootDirectoryURL
-        return try await Task.detached {
+        let key = ChainProxyConfigService.frontKey(for: URL(fileURLWithPath: configPath))
+        let front = self.chainProxyFrontSelections[key]
+        let result = try await Task.detached {
             try ChainProxyConfigService.prepareRuntimeConfig(
-                configURL: URL(fileURLWithPath: configPath), workingDirectory: root, settings: settings).path
+                configURL: URL(fileURLWithPath: configPath), workingDirectory: root, settings: settings, front: front)
         }.value
+        if settings?.enabled == true {
+            if result.isChained { self.unavailableChainProxyFronts.remove(key) }
+            else {
+                self.unavailableChainProxyFronts.insert(key)
+                self.appendLog(level: "warning", message: self.tr("ui.chain.front_missing"))
+            }
+        }
+        return result.url.path
     }
 
     func saveChainProxySettings(enabled: Bool, landing: ChainProxyNode) async throws {
@@ -54,6 +71,7 @@ extension AppViewModel {
             throw ChainProxyConfigError.sourceChanged
         }
         let previous = self.chainProxySettings
+        let previousUnavailable = self.unavailableChainProxyFronts
         let settings = ChainProxySettings(enabled: enabled, id: previous?.id ?? UUID(), landing: landing)
         let selectedURL = self.configService.selectedConfig
         let root = self.workingDirectoryManager.rootDirectoryURL
@@ -62,9 +80,11 @@ extension AppViewModel {
         var stage = "log.chain.validate"
 
         do {
+            if enabled, selectedURL == nil { throw ChainProxyConfigError.missingAirportFront }
             if let selectedURL {
                 let source = try Data(contentsOf: selectedURL)
                 let runtimePath = try await self.runtimeConfigPath(for: selectedURL.path, using: settings)
+                if enabled, self.currentChainProxyFront == nil { throw ChainProxyConfigError.missingAirportFront }
                 try await self.processManager.validateConfig(configPath: runtimePath)
                 guard !self.isRemoteTarget, self.configService.selectedConfig == selectedURL,
                       !self.isCoreActionProcessing, try Data(contentsOf: selectedURL) == source
@@ -93,6 +113,7 @@ extension AppViewModel {
                     self.logChainProxyFailure(operation: "log.chain.rollback", error: error)
                 }
             }
+            self.unavailableChainProxyFronts = previousUnavailable
             throw error
         }
     }
@@ -106,24 +127,28 @@ extension AppViewModel {
             defer { self.isRuntimeConfigUpdating = false }
             let target = self.remoteMachineStore.activeTarget
             let mode = self.currentMode
-            guard !self.isRemoteTarget, !self.modeSwitchInFlight, self.processManager.isRunning,
+            guard !self.isRemoteTarget, !self.isCoreActionProcessing, !self.modeSwitchInFlight, self.processManager.isRunning,
                   let selected = self.configService.selectedConfig,
                   let path = self.processManager.detectedBinaryPath
             else { throw ChainProxyLatencyError.unavailable }
             let source = try String(contentsOf: selected, encoding: .utf8)
             let response: ProxyGroupsResponse = try await self.clientOrThrow().request(.proxies)
-            guard target == self.remoteMachineStore.activeTarget, !self.isRemoteTarget,
-                  !self.modeSwitchInFlight, self.currentMode == mode, self.processManager.isRunning,
-                  self.configService.selectedConfig == selected,
-                  try String(contentsOf: selected, encoding: .utf8) == source
-            else { throw ChainProxyConfigError.sourceChanged }
             var selections = response.proxies.compactMapValues(\.now)
             if let settings = self.chainProxySettings, settings.enabled {
                 selections["GLOBAL"] = selections[ChainProxyConfigService.globalFrontName(id: settings.id)]
             }
-            frontYAML = try ChainProxyLatencyService.airportSnapshot(
-                sourceYAML: source, selections: selections,
-                workingDirectory: self.workingDirectoryManager.rootDirectoryURL, global: mode == .global)
+            guard let front = self.currentChainProxyFront else { throw ChainProxyConfigError.missingAirportFront }
+            let workingDirectory = self.workingDirectoryManager.rootDirectoryURL
+            let snapshotSelections = selections
+            frontYAML = try await Task.detached {
+                try ChainProxyLatencyService.airportSnapshot(
+                    sourceYAML: source, selections: snapshotSelections, front: front, workingDirectory: workingDirectory)
+            }.value
+            guard target == self.remoteMachineStore.activeTarget, !self.isRemoteTarget,
+                  !self.isCoreActionProcessing, !self.modeSwitchInFlight, self.currentMode == mode, self.processManager.isRunning,
+                  self.configService.selectedConfig == selected,
+                  try String(contentsOf: selected, encoding: .utf8) == source
+            else { throw ChainProxyConfigError.sourceChanged }
             self.chainProxyLogRedactor.include(yaml: frontYAML)
             binary = path
         }

@@ -106,8 +106,8 @@ struct ChainProxyLatencyServiceTests {
         """)
         let delay = try await ChainProxyLatencyService.measure(
             node: node, frontYAML: try ChainProxyLatencyService.airportSnapshot(
-                sourceYAML: "proxies: [{name: Front, type: http, server: 127.0.0.1, port: \(port)}]\nproxy-groups: [{name: Select, type: select, proxies: [Front]}]",
-                selections: ["Select": "Front"], workingDirectory: FileManager.default.temporaryDirectory), binaryPath: binary, url: "http://example.test/generate_204", timeout: 1000)
+                sourceYAML: "proxies: [{name: Front, type: http, server: 127.0.0.1, port: \(port)}]\nproxy-groups: [{name: Select, type: select, proxies: [Front]}]\nrules: [\"MATCH,Select\"]",
+                selections: ["Select": "Front"], front: ChainProxyFrontSelection(group: "Select", node: "Front"), workingDirectory: FileManager.default.temporaryDirectory), binaryPath: binary, url: "http://example.test/generate_204", timeout: 1000)
         #expect(delay > 0)
     }
 
@@ -118,19 +118,25 @@ struct ChainProxyLatencyServiceTests {
           - {name: Second, type: vmess, server: second.test, port: 443, uuid: preserved, dialer-proxy: Upstream}
           - {name: Hop, type: http, server: hop.test, port: 8080}
         proxy-groups:
+          - {name: Service, type: select, proxies: [First]}
           - {name: Select, type: select, proxies: [First, Auto]}
           - {name: Auto, type: url-test, proxies: [Second]}
+        rules: ["MATCH,Select"]
         """
         let source = try ChainProxyLatencyService.airportSnapshot(
-            sourceYAML: yaml, selections: ["Select": "Auto", "Auto": "Second", "Upstream": "Hop"],
+            sourceYAML: yaml, selections: ["GLOBAL": "Service", "Service": "First", "Select": "Auto", "Auto": "Second", "Upstream": "Hop"], front: ChainProxyFrontSelection(group: "Select", node: "Auto"),
             workingDirectory: FileManager.default.temporaryDirectory)
         let config = try #require(try Yams.load(yaml: source) as? [String: Any])
         let proxies = try #require(config["proxies"] as? [[String: Any]])
         #expect(proxies.compactMap { $0["name"] as? String } == ["Hop", "Second"])
         #expect(proxies.last?["uuid"] as? String == "preserved")
         #expect(proxies.last?["dialer-proxy"] as? String == "Hop")
+        let otherSelection = try ChainProxyLatencyService.airportSnapshot(
+            sourceYAML: yaml, selections: ["GLOBAL": "First", "Service": "DIRECT", "Select": "Auto", "Auto": "Second", "Upstream": "Hop"], front: ChainProxyFrontSelection(group: "Select", node: "Auto"),
+            workingDirectory: FileManager.default.temporaryDirectory)
+        #expect(otherSelection == source)
         let switched = try ChainProxyLatencyService.airportSnapshot(
-            sourceYAML: yaml, selections: ["Select": "First"], workingDirectory: FileManager.default.temporaryDirectory)
+            sourceYAML: yaml, selections: ["Select": "First"], front: ChainProxyFrontSelection(group: "Select", node: "First"), workingDirectory: FileManager.default.temporaryDirectory)
         #expect(!switched.contains("second.test"))
         #expect(switched.contains("first.test"))
     }
@@ -139,8 +145,8 @@ struct ChainProxyLatencyServiceTests {
         for selections in [["Select": "DIRECT"], ["Select": "Missing"], ["Select": "Select"], [:]] {
             #expect(throws: ChainProxyLatencyError.self) {
                 try ChainProxyLatencyService.airportSnapshot(
-                    sourceYAML: "proxy-groups: [{name: Select, type: select, proxies: [DIRECT]}]",
-                    selections: selections, workingDirectory: FileManager.default.temporaryDirectory)
+                    sourceYAML: "proxy-groups: [{name: Select, type: select, proxies: [DIRECT]}]\nrules: [\"MATCH,Select\"]",
+                    selections: selections, front: ChainProxyFrontSelection(group: "Select", node: "DIRECT"), workingDirectory: FileManager.default.temporaryDirectory)
             }
         }
     }
@@ -153,8 +159,8 @@ struct ChainProxyLatencyServiceTests {
         let url = directory.appendingPathComponent("provider.yaml")
         try cache.write(to: url, atomically: true, encoding: .utf8)
         let snapshot = try ChainProxyLatencyService.airportSnapshot(
-            sourceYAML: "proxy-providers: {Airport: {path: provider.yaml}}",
-            selections: ["GLOBAL": "ProviderNode"], workingDirectory: directory, global: true)
+            sourceYAML: "proxy-providers: {Airport: {path: provider.yaml}}\nproxy-groups: [{name: GLOBAL, type: select, use: [Airport]}]\nrules: [\"MATCH,GLOBAL\"]",
+            selections: ["GLOBAL": "ProviderNode"], front: ChainProxyFrontSelection(group: "GLOBAL", node: "ProviderNode"), workingDirectory: directory)
         #expect(snapshot.contains("cached.test"))
         #expect(snapshot.contains("preserved"))
         #expect(try String(contentsOf: url, encoding: .utf8) == cache)
@@ -169,9 +175,10 @@ struct ChainProxyLatencyServiceTests {
             payload: [{name: Raw, type: socks5, server: front.test, port: 443, password: preserved, tls: true}]
             override: {additional-prefix: Airport-, additional-suffix: -Node, skip-cert-verify: true, dialer-proxy: Hop}
         proxy-groups: [{name: Select, type: select, use: [Airport]}]
+        rules: ["MATCH,Select"]
         """
         let snapshot = try ChainProxyLatencyService.airportSnapshot(
-            sourceYAML: yaml, selections: ["Select": "Airport-Raw-Node"],
+            sourceYAML: yaml, selections: ["Select": "Airport-Raw-Node"], front: ChainProxyFrontSelection(group: "Select", node: "Airport-Raw-Node"),
             workingDirectory: FileManager.default.temporaryDirectory)
         let config = try #require(try Yams.load(yaml: snapshot) as? [String: Any])
         let proxies = try #require(config["proxies"] as? [[String: Any]])
@@ -202,8 +209,9 @@ struct ChainProxyLatencyServiceTests {
                 payload: [{name: Cached, type: socks5, server: fallback.test, port: 1080}]
                 override: {dialer-proxy: ''}
             proxy-groups: [{name: Select, type: select, use: [Airport]}]
+            rules: ["MATCH,Select"]
             """,
-            selections: ["Select": "Cached"], workingDirectory: directory)
+            selections: ["Select": "Cached"], front: ChainProxyFrontSelection(group: "Select", node: "Cached"), workingDirectory: directory)
         #expect(snapshot.contains("cached.test"))
         #expect(!snapshot.contains("fallback.test"))
         #expect(!snapshot.contains("OldHop"))

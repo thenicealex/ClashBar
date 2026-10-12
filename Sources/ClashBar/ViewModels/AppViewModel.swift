@@ -66,6 +66,8 @@ final class AppViewModel: ObservableObject {
     @Published var isLocalRuntimeChanging = false
     // Serializes runtime reloads, local transactions and latency snapshots across await points.
     var isRuntimeConfigUpdating = false
+    @Published var unavailableChainProxyFronts: Set<String> = []
+    @Published var chainProxyFrontSelections: [String: ChainProxyFrontSelection] = [:]
     @Published var chainProxySettings: ChainProxySettings?
     @Published var chainProxySettingsLoadFailed = false
     var chainProxyLogRedactor = ChainProxyLogRedactor()

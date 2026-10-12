@@ -20,8 +20,9 @@ struct ChainProxyViewModelTests {
         let restored = try self.model(home: home, core: core)
         #expect(restored.chainProxySettings == model.chainProxySettings)
         let second = config.deletingLastPathComponent().appendingPathComponent("airport-b.yaml")
-        try "proxies: []\nproxy-groups: []\nrules: [MATCH,DIRECT]\n".write(
+        try self.source.replacingOccurrences(of: "Select", with: "Other Select").write(
             to: second, atomically: true, encoding: .utf8)
+        restored.chainProxyFrontSelections[ChainProxyConfigService.frontKey(for: second)] = ChainProxyFrontSelection(group: "Other Select", node: "Front")
         _ = restored.configService.reloadConfigs()
         restored.configService.selectConfig(second)
         #expect(await restored.configValidationFailureDetails(configPath: second.path) == nil)
@@ -190,10 +191,13 @@ struct ChainProxyViewModelTests {
         mixed-port: 7891
         external-controller: chain.test:9090
         proxies: [{name: B Node, type: socks5, server: b.example.com, port: 1080}]
-        proxy-groups: [{name: B Select, type: select, proxies: [B Node]}]
+        proxy-groups:
+          - {name: B Service, type: select, proxies: [DIRECT, B Node]}
+          - {name: B Select, type: select, proxies: [B Node]}
         rules: ["DOMAIN,lan.local,DIRECT", "MATCH,B Select"]
         """
         try sourceB.write(to: airportB, atomically: true, encoding: .utf8)
+        model.chainProxyFrontSelections[ChainProxyConfigService.frontKey(for: airportB)] = ChainProxyFrontSelection(group: "B Select", node: "B Node")
         _ = model.configService.reloadConfigs()
         model.configService.selectConfig(airportA)
         let selectedA = try #require(model.configService.selectedConfig)
@@ -325,7 +329,7 @@ struct ChainProxyViewModelTests {
         #expect(api.selectedNode(in: actualGroup) == "Front")
         #expect(api.selectedNode(in: global ? "Select" : ChainProxyConfigService.globalFrontName(id: settings.id)) == "Exit")
         #expect(model.proxyGroups.first { $0.name == "GLOBAL" }?.all == ["Select", "Front", "Exit", "DIRECT", "REJECT"])
-        #expect(api.appliedPaths.count == 1)
+        #expect(api.appliedPaths.count == (global ? 2 : 1))
         #expect(settings.landing == landing)
         #expect(model.configService.selectedConfig == config)
         #expect(!model.isLocalRuntimeChanging)
@@ -398,6 +402,203 @@ struct ChainProxyViewModelTests {
         #expect(!model.isRuntimeConfigUpdating)
     }
 
+    @Test func recentGroupSelectionPersistsAndNewAirportWaitsForSelection() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let (model, airportA, landing) = try self.configuredModel(home: home, core: RecordingChainCore(running: true))
+        let session = self.configureAPI(for: model)
+        defer { model.cancelOwnedTasks(); session.invalidateAndCancel() }
+        ChainAPIProtocol.state.seedAirportSelections()
+        try await model.saveChainProxySettings(enabled: true, landing: landing)
+        await model.switchProxy(group: "GLOBAL", target: "Exit")
+        #expect(model.currentChainProxyFront == ChainProxyFrontSelection(group: "GLOBAL", node: "Exit"))
+        let airportB = airportA.deletingLastPathComponent().appendingPathComponent("new-airport.yaml")
+        try self.source.write(to: airportB, atomically: true, encoding: .utf8)
+        _ = model.configService.reloadConfigs()
+        await model.selectConfigFile(named: "new-airport.yaml")
+        #expect(model.currentChainProxyFront == nil)
+        #expect(!model.isChainProxyActive)
+        #expect(model.chainProxySettings?.enabled == true)
+        #expect(try await model.runtimeConfigPath(for: airportB.path) == airportB.path)
+        #expect(model.errorLogs.contains { $0.message == model.tr("ui.chain.front_missing") })
+        ChainAPIProtocol.state.seedAirportSelections()
+        await model.switchProxy(group: "Select", target: "Front")
+        #expect(model.isChainProxyActive)
+        #expect(model.currentChainProxyFront == ChainProxyFrontSelection(group: "Select", node: "Front"))
+        #expect(model.chainProxySettings?.landing == landing)
+        await model.selectConfigFile(named: "airport.yaml")
+        #expect(model.currentChainProxyFront == ChainProxyFrontSelection(group: "GLOBAL", node: "Exit"))
+        let saved = try ChainProxyConfigService.readFrontSelections(workingDirectory: model.workingDirectoryManager.rootDirectoryURL)
+        #expect(saved.count == 2)
+        #expect(saved[ChainProxyConfigService.frontKey(for: airportB)]?.group == "Select")
+    }
+
+    @Test func failedFrontPersistenceRollsBackGroupAndRuntime() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let (model, _, landing) = try self.configuredModel(home: home, core: RecordingChainCore(running: true))
+        let session = self.configureAPI(for: model)
+        defer { session.invalidateAndCancel() }
+        let api = ChainAPIProtocol.state
+        api.seedAirportSelections()
+        try await model.saveChainProxySettings(enabled: true, landing: landing)
+        let previous = model.currentChainProxyFront
+        let file = model.workingDirectoryManager.rootDirectoryURL.appendingPathComponent("state/chain-proxy-fronts.json")
+        try FileManager.default.removeItem(at: file)
+        try FileManager.default.createDirectory(at: file, withIntermediateDirectories: false)
+        let settings = try #require(model.chainProxySettings)
+        let hidden = ChainProxyConfigService.globalFrontName(id: settings.id)
+        let oldNode = api.selectedNode(in: hidden)
+        await model.switchProxy(group: "GLOBAL", target: "Front")
+        #expect(model.currentChainProxyFront == previous)
+        #expect(api.selectedNode(in: hidden) == oldNode)
+        #expect(api.appliedPaths.count == 3)
+        #expect(!model.isLocalRuntimeChanging)
+        #expect(!model.isRuntimeConfigUpdating)
+    }
+
+    @Test func staleFrontWaitsWithoutDeletingItsRecordAndCoreActionsBlockSelection() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let (model, config, landing) = try self.configuredModel(home: home, core: RecordingChainCore(running: true))
+        let session = self.configureAPI(for: model)
+        defer { session.invalidateAndCancel() }
+        ChainAPIProtocol.state.seedAirportSelections()
+        model.coreActionState = .starting
+        await model.switchProxy(group: "GLOBAL", target: "Front")
+        #expect(ChainAPIProtocol.state.requests.isEmpty)
+        #expect(model.currentChainProxyFront?.group == "Select")
+        model.coreActionState = .idle
+        try await model.saveChainProxySettings(enabled: true, landing: landing)
+        let yaml = "proxies: [{name: Replacement, type: socks5, server: new.test, port: 1080}]\nproxy-groups: [{name: Select, type: select, proxies: [Replacement]}]\nrules: [\"MATCH,Select\"]"
+        try yaml.write(to: config, atomically: true, encoding: .utf8)
+        let path = try await model.runtimeConfigPath(for: config.path)
+        #expect(path == config.path)
+        #expect(model.currentChainProxyFront == nil)
+        #expect(!model.isChainProxyActive)
+        let saved = try ChainProxyConfigService.readFrontSelections(workingDirectory: model.workingDirectoryManager.rootDirectoryURL)
+        #expect(saved[ChainProxyConfigService.frontKey(for: config)]?.node == "Front")
+    }
+
+    @Test func startupRestorationCannotOverwriteAConcurrentSelection() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let (model, _, _) = try self.configuredModel(home: home, core: RecordingChainCore(running: true))
+        let session = self.configureAPI(for: model)
+        defer { session.invalidateAndCancel() }
+        let api = ChainAPIProtocol.state
+        api.seedAirportSelections()
+        let pause = ChainValidationPause()
+        api.pauseNextProxiesRequest(pause)
+        model.coreActionState = .starting
+        let restoring = Task { try await model.restoreChainProxyFrontSelection() }
+        await pause.waitUntilPaused()
+        #expect(model.isLocalRuntimeChanging)
+        await model.switchProxy(group: "GLOBAL", target: "Exit")
+        #expect(model.currentChainProxyFront?.group == "Select")
+        await pause.release()
+        try await restoring.value
+        model.coreActionState = .idle
+        #expect(api.selectedNode(in: "Select") == "Front")
+        #expect(model.currentChainProxyFront?.node == "Front")
+        #expect(!model.isLocalRuntimeChanging)
+        #expect(!model.isRuntimeConfigUpdating)
+    }
+
+    @Test func missingProviderCacheDoesNotDeleteFrontAndRecoversOnReload() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let (model, config, landing) = try self.configuredModel(home: home, core: RecordingChainCore())
+        let root = model.workingDirectoryManager.rootDirectoryURL
+        let front = ChainProxyFrontSelection(group: "Select", node: "Cached")
+        model.chainProxyFrontSelections[ChainProxyConfigService.frontKey(for: config)] = front
+        try ChainProxyConfigService.writeFrontSelections(model.chainProxyFrontSelections, workingDirectory: root)
+        let record = root.appendingPathComponent("state/chain-proxy-fronts.json")
+        let before = try Data(contentsOf: record)
+        model.chainProxySettings = ChainProxySettings(enabled: true, id: UUID(), landing: landing)
+        try "proxy-providers: {A: {type: file, path: provider.yaml}}\nproxy-groups: [{name: Select, type: select, use: [A]}]\nrules: [\"MATCH,DIRECT\"]"
+            .write(to: config, atomically: true, encoding: .utf8)
+        #expect(try await model.runtimeConfigPath(for: config.path) == config.path)
+        #expect(model.currentChainProxyFront == nil)
+        #expect(try Data(contentsOf: record) == before)
+        try "proxies: [{name: Cached, type: socks5, server: cached.test, port: 1080}]"
+            .write(to: root.appendingPathComponent("provider.yaml"), atomically: true, encoding: .utf8)
+        let runtime = try await model.runtimeConfigPath(for: config.path)
+        #expect(runtime != config.path)
+        #expect(model.currentChainProxyFront == front)
+        #expect(model.isChainProxyActive)
+        #expect(try Data(contentsOf: record) == before)
+    }
+
+    @Test func failedCandidateValidationPreservesFrontAndPendingState() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let (model, config, landing) = try self.configuredModel(home: home, core: RecordingChainCore(rejectsValidation: true))
+        let root = model.workingDirectoryManager.rootDirectoryURL
+        let record = root.appendingPathComponent("state/chain-proxy-fronts.json")
+        let before = try Data(contentsOf: record)
+        let key = ChainProxyConfigService.frontKey(for: config)
+        model.unavailableChainProxyFronts.insert(key)
+        await #expect(throws: (any Error).self) {
+            try await model.saveChainProxySettings(enabled: true, landing: landing)
+        }
+        #expect(model.unavailableChainProxyFronts.contains(key))
+        #expect(model.chainProxyFrontSelections[key]?.node == "Front")
+        #expect(try Data(contentsOf: record) == before)
+    }
+
+    @Test func corruptFrontRecordsDoNotBlockIndependentRearSettings() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let (model, config, landing) = try self.configuredModel(home: home, core: RecordingChainCore())
+        try await model.saveChainProxySettings(enabled: false, landing: landing)
+        try "invalid JSON".write(to: model.workingDirectoryManager.rootDirectoryURL.appendingPathComponent("state/chain-proxy-fronts.json"),
+                                 atomically: true, encoding: .utf8)
+        let restored = try self.model(home: home, core: RecordingChainCore())
+        #expect(!restored.chainProxySettingsLoadFailed)
+        #expect(restored.chainProxySettings == model.chainProxySettings)
+        #expect(restored.chainProxyFrontSelections.isEmpty)
+        #expect(try await restored.runtimeConfigPath(for: config.path) == config.path)
+    }
+
+    @Test func selectionRestorationStillRunsWhenRuntimeRollbackFails() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let (model, _, landing) = try self.configuredModel(home: home, core: RecordingChainCore(running: true))
+        let session = self.configureAPI(for: model)
+        defer { session.invalidateAndCancel() }
+        let api = ChainAPIProtocol.state
+        api.seedAirportSelections()
+        try await model.saveChainProxySettings(enabled: true, landing: landing)
+        let previous = model.currentChainProxyFront
+        let settings = try #require(model.chainProxySettings)
+        let hidden = ChainProxyConfigService.globalFrontName(id: settings.id)
+        let oldNode = api.selectedNode(in: hidden)
+        api.failNextConfigPUT(count: 2)
+        await model.switchProxy(group: "GLOBAL", target: "Front")
+        #expect(model.currentChainProxyFront == previous)
+        #expect(api.selectedNode(in: hidden) == oldNode)
+        #expect(model.errorLogs.contains { $0.level == "error" && $0.message.contains(model.tr("log.chain.rollback")) })
+        #expect(!model.isRuntimeConfigUpdating)
+        #expect(!model.isLocalRuntimeChanging)
+    }
+
+    @Test func enablingWithoutAnAirportNeverCommits() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let model = try self.model(home: home, core: RecordingChainCore())
+        let landing = try ChainProxyConfigService.makeNode(name: "Exit", yaml: "type: socks5\nserver: exit.test\nport: 1080")
+        #expect(model.configService.selectedConfig == nil)
+        await #expect(throws: ChainProxyConfigError.missingAirportFront) {
+            try await model.saveChainProxySettings(enabled: true, landing: landing)
+        }
+        #expect(model.chainProxySettings == nil)
+        #expect(!model.isLocalRuntimeChanging)
+        #expect(!model.isRuntimeConfigUpdating)
+        #expect(!FileManager.default.fileExists(atPath: ChainProxyConfigService.settingsURL(
+            workingDirectory: model.workingDirectoryManager.rootDirectoryURL).path))
+    }
+
     private func mockSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [ChainAPIProtocol.self]
@@ -415,6 +616,7 @@ struct ChainProxyViewModelTests {
     }
 
     private let source = """
+    external-controller: chain.test:9090
     proxies:
       - {name: Front, type: socks5, server: front.example.com, port: 1080}
       - {name: Exit, type: socks5, server: exit.example.com, port: 1080}
@@ -430,6 +632,9 @@ struct ChainProxyViewModelTests {
         try self.source.write(to: config, atomically: true, encoding: .utf8)
         _ = model.configService.reloadConfigs()
         model.configService.selectConfig(config)
+        model.chainProxyFrontSelections[ChainProxyConfigService.frontKey(for: config)] = ChainProxyFrontSelection(group: "Select", node: "Front")
+        try ChainProxyConfigService.writeFrontSelections(
+            model.chainProxyFrontSelections, workingDirectory: model.workingDirectoryManager.rootDirectoryURL)
         let landing = try ChainProxyConfigService.makeNode(
             name: "Exit", yaml: "type: socks5\nserver: exit.example.com\nport: 1080")
         return (model, config, landing)
@@ -525,10 +730,15 @@ private final class ChainAPIState: @unchecked Sendable {
     private var paths: [String] = []
     private var nextPUTPause: ChainValidationPause?
     private var nextProbePause: ChainValidationPause?
+    private var nextProxiesPause: ChainValidationPause?
     private var failedPUTsRemaining = 0
     private var recordedRequests: [(host: String, method: String)] = []
 
     private var proxySnapshot: [String: [String: Any]] = [:]
+
+    func pauseNextProxiesRequest(_ pause: ChainValidationPause) {
+        self.lock.withLock { self.nextProxiesPause = pause }
+    }
 
     func seedAirportSelections() {
         self.lock.withLock {
@@ -552,6 +762,7 @@ private final class ChainAPIState: @unchecked Sendable {
             self.paths.removeAll()
             self.nextPUTPause = pause
             self.nextProbePause = nil
+            self.nextProxiesPause = nil
             self.failedPUTsRemaining = 0
             self.recordedRequests.removeAll()
         }
@@ -634,6 +845,12 @@ private final class ChainAPIState: @unchecked Sendable {
         }
         if request.url?.path == "/version" { return Data(#"{"version":"v1.19.27"}"#.utf8) }
         if request.url?.path == "/proxies" {
+            let pause = self.lock.withLock {
+                let pause = self.nextProxiesPause
+                self.nextProxiesPause = nil
+                return pause
+            }
+            await pause?.suspend()
             let snapshot = self.lock.withLock { self.proxySnapshot }
             return try JSONSerialization.data(withJSONObject: ["proxies": snapshot])
         }

@@ -395,7 +395,7 @@ extension AppViewModel {
         proxyProviders: [String: ProviderDetail] = [:])
     {
         let globalFront = self.isRemoteTarget ? nil : self.chainProxySettings.flatMap {
-            $0.enabled ? ChainProxyConfigService.globalFrontName(id: $0.id) : nil
+            self.isChainProxyActive ? ChainProxyConfigService.globalFrontName(id: $0.id) : nil
         }
         let airportGlobal = globalFront.flatMap { response.proxies[$0] }
         let providerLookup = proxyProviders.isEmpty ? self.proxyProvidersDetail : proxyProviders

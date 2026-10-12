@@ -86,9 +86,14 @@ struct ChainProxyConfigView: TranslatingView {
 
     private var form: some View {
         VStack(alignment: .leading, spacing: T.space8) {
+            if self.appViewModel.currentChainProxyFront == nil {
+                Text(self.tr("ui.chain.front_missing"))
+                    .font(.app(size: T.FontSize.caption))
+                    .foregroundStyle(self.nativeSecondaryLabel)
+            }
             Toggle(self.tr("ui.chain.enabled"), isOn: Binding(
                 get: { self.enabled }, set: self.setEnabled))
-                .toggleStyle(ChainProxyToggleStyle())
+                .toggleStyle(ChainProxyToggleStyle(isActive: self.appViewModel.isChainProxyActive))
                 .font(.app(size: T.FontSize.body, weight: .medium))
                 .foregroundStyle(self.nativePrimaryLabel)
                 .frame(height: T.rowHeight)
@@ -302,6 +307,8 @@ private struct ChainProxyNodeLatencyView: TranslatingView {
         } ?? "")
         .onHover { self.isHovered = $0 }
         .onChange(of: self.node) { _ in self.reset() }
+        .onChange(of: self.appViewModel.selectedConfigName) { _ in self.reset() }
+        .onChange(of: self.appViewModel.currentChainProxyFront) { _ in self.reset() }
         .onDisappear { self.reset() }
     }
 
@@ -337,12 +344,13 @@ private struct ChainProxyNodeLatencyView: TranslatingView {
 }
 
 private struct ChainProxyToggleStyle: ToggleStyle {
+    let isActive: Bool
     func makeBody(configuration: Configuration) -> some View {
         Button { configuration.isOn.toggle() } label: {
             HStack(spacing: T.space8) {
                 configuration.label
                 Capsule()
-                    .fill(configuration.isOn ? Color.blue : Color.secondary.opacity(0.4))
+                    .fill(configuration.isOn && self.isActive ? Color.blue : Color.secondary.opacity(0.4))
                     .overlay(alignment: configuration.isOn ? .trailing : .leading) {
                         Circle()
                             .fill(.white)

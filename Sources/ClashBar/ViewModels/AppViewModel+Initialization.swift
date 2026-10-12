@@ -135,6 +135,7 @@ extension AppViewModel {
         if let chainError = error as? ChainProxyConfigError {
             switch chainError {
             case .invalidConfig: return self.tr("ui.chain.load_failed")
+            case .missingAirportFront: return self.tr("ui.chain.front_missing")
             case .invalidSelection: return self.tr("ui.chain.invalid_selection")
             case .sourceChanged: return self.tr("ui.chain.source_changed")
             case .invalidSavedSettings: return self.tr("ui.chain.saved_load_failed")

@@ -329,6 +329,8 @@ extension AppViewModel {
         ensureAPIClient()
         startPolling()
         await refreshFromAPI(includeSlowCalls: true)
+        do { try await self.restoreChainProxyFrontSelection() }
+        catch { self.logChainProxyFailure(operation: "log.chain.apply", error: error) }
 
         await self.syncEditableSettingsOverlayForCoreBootstrap(
             settingsOverlay,
